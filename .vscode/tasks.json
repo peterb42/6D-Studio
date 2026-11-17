@@ -1,0 +1,64 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Studio starten",
+      "type": "shell",
+      "command": "${workspaceFolder}/bin/6d-fernsteuerung studio",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Studio stoppen",
+      "type": "shell",
+      "command": "${workspaceFolder}/bin/6d-fernsteuerung stop",
+      "problemMatcher": [],
+      "presentation": { "reveal": "silent", "panel": "shared" }
+    },
+    {
+      "label": "Studio neu starten",
+      "dependsOrder": "sequence",
+      "dependsOn": ["Studio stoppen", "Studio starten"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Studio-Protokoll verfolgen",
+      "type": "shell",
+      "command": "tail -n 40 -f ~/.gphoto/6d-proxy.log",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "Status",
+      "type": "shell",
+      "command": "${workspaceFolder}/bin/6d-fernsteuerung status",
+      "problemMatcher": []
+    },
+    {
+      "label": "Tests",
+      "type": "shell",
+      "command": "/usr/bin/python3 -m unittest discover -s tests -v",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Lint (ruff)",
+      "type": "shell",
+      "command": "ruff check studio tools tests",
+      "problemMatcher": []
+    },
+    {
+      "label": "Installieren (Symlinks)",
+      "type": "shell",
+      "command": "${workspaceFolder}/install.sh",
+      "problemMatcher": []
+    },
+    {
+      "label": "Kamera-Fähigkeiten auslesen",
+      "type": "shell",
+      "command": "/usr/bin/python3 tools/ptp-caps.py",
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "python.defaultInterpreterPath": "/usr/bin/python3",
+  "python.testing.unittestEnabled": true,
+  "python.testing.pytestEnabled": false,
+  "python.testing.unittestArgs": ["-v", "-s", "./tests", "-p", "test_*.py"],
+  "python.analysis.extraPaths": ["./studio"],
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.codeActionsOnSave": { "source.organizeImports": "explicit" }
+  },
+  "files.associations": { "**/bin/6d-fernsteuerung": "shellscript" },
+  "files.exclude": { "**/__pycache__": true, "**/.ruff_cache": true },
+  "editor.rulers": [120],
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true
+}

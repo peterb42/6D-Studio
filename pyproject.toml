@@ -1,0 +1,12 @@
+[project]
+name = "6d-studio"
+version = "0.1.0"
+description = "WLAN-Fernsteuerung der Canon EOS 6D (PTP/IP) mit Browser-Oberfläche"
+requires-python = ">=3.9"   # läuft mit dem System-Python von macOS, nur Standardbibliothek
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]

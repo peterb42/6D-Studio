@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+.ruff_cache/
+*.log
+# Fotos gehören nicht ins Repository
+*.CR2
+*.cr2
+*.JPG
+*.jpg
+!docs/**/*.jpg

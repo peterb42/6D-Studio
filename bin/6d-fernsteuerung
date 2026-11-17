@@ -1,0 +1,226 @@
+#!/bin/zsh
+# Fernsteuerung der Canon EOS 6D mit gphoto2 – per WLAN (PTP/IP) oder USB.
+#
+# WLAN: Kamera und Mac im selben 2,4-GHz-Netz (z. B. iPhone-Hotspot mit
+#       „Maximale Kompatibilität“), an der Kamera Wi-Fi-Funktion →
+#       „Fernsteuerung (EOS Utility)“. Einmal einrichten:  6d-fernsteuerung wlan
+#       Danach laufen alle Befehle über WLAN, bis:          6d-fernsteuerung usb
+#
+#       Die 6D braucht einen Vermittler (6D Studio): Sie meldet sich zu langsam
+#       für gphoto2 an und trennt, sobald eine Session endet oder 30 s Ruhe ist.
+#       6D Studio hält EINE Verbindung offen; gphoto2 spricht mit 127.0.0.1.
+#       Bedienoberfläche im Browser:  6d-fernsteuerung studio
+# USB:  WLAN an der Kamera AUS, Kamera per Datenkabel am Mac.
+
+set -u
+SELF="${0:t}"
+OUT="${OUT:-$HOME/Pictures/6D-Tethering}"
+NAME="%Y%m%d-%H%M%S-%n.%C"
+GPDIR="$HOME/.gphoto"
+IPFILE="$GPDIR/6d-wlan-ip"
+PROXY="$HOME/.local/bin/6d-studio"
+PROXY_LOG="$GPDIR/6d-proxy.log"
+PROXY_PORT=15740
+STUDIO_URL="http://127.0.0.1:8066"
+
+# ---------- Verbindungsart ----------
+if [[ -s $IPFILE ]]; then
+  CAM_IP="$(<$IPFILE)"
+  MODE="WLAN"
+  GP=(gphoto2 --port "ptpip:127.0.0.1" --camera "PTP/IP Camera")
+else
+  CAM_IP=""
+  MODE="USB"
+  GP=(gphoto2)
+fi
+
+free_camera() {
+  # Nur für USB: macOS-Dienst ptpcamerad blockiert sonst die Kamera.
+  [[ $MODE == USB ]] && { killall ptpcamerad PTPCamera 2>/dev/null; sleep 0.5; }
+  return 0
+}
+
+# ---------- Vermittler (nur WLAN) ----------
+proxy_pid() { lsof -nP -t -iTCP@127.0.0.1:$PROXY_PORT -sTCP:LISTEN 2>/dev/null | head -1; }
+
+proxy_ready() {  # läuft der Vermittler und ist die Kamera aktuell angemeldet?
+  [[ -n $(proxy_pid) ]] || return 1
+  local last
+  last=$(grep -E "✅ Kamera verbunden|❌|Warte auf" "$PROXY_LOG" 2>/dev/null | tail -1)
+  [[ $last == *"✅"* ]]
+}
+
+start_proxy() {
+  [[ -n $(proxy_pid) ]] && return 0
+  mkdir -p "$GPDIR"
+  nohup /usr/bin/python3 -I -u "$PROXY" "$CAM_IP" > "$PROXY_LOG" 2>&1 &
+  disown
+  sleep 1
+}
+
+stop_proxy() {
+  local pid; pid=$(proxy_pid)
+  [[ -n $pid ]] && kill "$pid" && echo "Vermittler beendet."
+  return 0
+}
+
+ensure_camera() {  # vor jedem Befehl: im WLAN-Modus Vermittler starten und auf Kamera warten
+  free_camera
+  [[ $MODE == WLAN ]] || return 0
+  start_proxy
+  proxy_ready && return 0
+  echo "Warte auf die 6D ($CAM_IP) – an der Kamera Wi-Fi-Funktion → „Fernsteuerung (EOS Utility)“ starten …"
+  for i in {1..120}; do
+    proxy_ready && { echo "Kamera verbunden."; return 0; }
+    sleep 1
+  done
+  echo "❌ Kamera nicht verbunden. Log: $PROXY_LOG"; tail -3 "$PROXY_LOG"
+  exit 1
+}
+
+# ---------- WLAN einrichten ----------
+mdns_run() {  # mdns_run <sekunden> <dns-sd-argumente…>
+  local secs=$1; shift
+  local f; f=$(mktemp -t 6d-mdns)
+  dns-sd "$@" >"$f" 2>&1 &
+  local p=$!
+  sleep "$secs"; kill $p 2>/dev/null; wait $p 2>/dev/null
+  cat "$f"; rm -f "$f"
+}
+
+find_camera_ip() {  # Bonjour (_ptp._tcp), sonst Ping/ARP nach Canon-Geräten. Kein TCP-Test!
+  local name host ip
+  for i in {1..5}; do
+    name=$(mdns_run 3 -B _ptp._tcp local. |
+           awk '$2=="Add"{ $1=$2=$3=$4=$5=$6=""; sub(/^ +/,""); print; exit }')
+    [[ -n $name ]] && break
+  done
+  if [[ -n $name ]]; then
+    host=$(mdns_run 3 -L "$name" _ptp._tcp local. | sed -n 's/.* can be reached at \([^ :]*\):[0-9]*.*/\1/p' | head -1)
+    [[ -n $host ]] && ip=$(mdns_run 2 -G v4 "$host" | awk '$2=="Add"{print $6; exit}')
+  fi
+  if [[ -z ${ip:-} ]]; then
+    local dev myip base
+    dev=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}'); [[ -z $dev ]] && dev=en0
+    myip=$(ipconfig getifaddr "$dev" 2>/dev/null); base=${myip%.*}
+    for i in {1..254}; do echo "$base.$i"; done | xargs -P 64 -I{} ping -c 1 -t 1 {} >/dev/null 2>&1
+    ip=$(arp -an -i "$dev" | grep -i -E ' at (2c:9e:fc|00:1e:8f|00:00:85|00:bb:c1|18:0c:ac|88:87:17|f4:81:39|74:bf:c0):' |
+         sed -n 's/.*(\([0-9.]*\)).*/\1/p' | head -1)
+  fi
+  print -r -- "${ip:-}"
+}
+
+wlan_setup() {  # [ip]
+  local ip="${1:-}"
+  if [[ -z $ip ]]; then
+    echo "Suche die 6D im WLAN …"
+    ip=$(find_camera_ip)
+  fi
+  [[ -n $ip ]] || { echo "Keine Kamera gefunden. Ist die 6D im Modus „Fernsteuerung (EOS Utility)“ und im selben Netz? Sonst IP angeben: $SELF wlan 172.20.10.3"; return 1; }
+  mkdir -p "$GPDIR"; echo "$ip" > "$IPFILE"
+  echo "Kamera-IP: $ip – WLAN-Modus aktiv."
+  stop_proxy >/dev/null
+  CAM_IP=$ip; MODE=WLAN; GP=(gphoto2 --port "ptpip:127.0.0.1" --camera "PTP/IP Camera")
+  ensure_camera && "${GP[@]}" --get-config batterylevel 2>&1 | grep -E "^Current" | sed 's/Current/Akku/'
+}
+
+usage() {
+  cat <<EOF
+Aufruf: $SELF <befehl> [argumente]      Verbindung: $MODE${CAM_IP:+ ($CAM_IP)}
+
+  studio             Bedienoberfläche im Browser öffnen (Livebild, Lupe, Fokus, Bulb, ISO/Blende/Zeit)
+  wlan [ip]          WLAN-Modus einrichten (Kamera suchen, Vermittler starten)
+  stop               6D Studio / Vermittler beenden
+  usb                Zurück auf USB-Kabel (beendet den Vermittler)
+  status             Zustand der WLAN-Verbindung anzeigen
+  check              Kamera-Infos anzeigen
+  shoot              Ein Foto auslösen und auf den Mac laden
+  tether             Jedes an der Kamera ausgelöste Foto automatisch auf den Mac laden (Strg+C beendet)
+  liveview           Live-Bild in einem Fenster (Fenster schließen oder q beendet)
+  preview            Ein einzelnes Live-View-Bild holen und öffnen
+  settings           Aktuelle ISO, Blende, Zeit, Weißabgleich, Bildqualität, Akku anzeigen
+  options <name>     Mögliche Werte einer Einstellung, z. B. options iso
+  set <name> <wert>  Einstellung ändern, z. B. set iso 800 | set aperture 8 | set shutterspeed 1/125
+  shell              Interaktive gphoto2-Shell
+
+Fotos landen in: $OUT  (änderbar mit OUT=/anderer/ordner $SELF …)
+EOF
+}
+
+cmd="${1:-help}"
+(( $# )) && shift
+
+case "$cmd" in
+  studio)
+    [[ $MODE == WLAN ]] || { echo "6D Studio braucht den WLAN-Modus – zuerst: $SELF wlan"; exit 1; }
+    start_proxy
+    for i in {1..20}; do curl -s -o /dev/null "$STUDIO_URL/api/state" && break; sleep 0.3; done
+    open "$STUDIO_URL"
+    echo "6D Studio: $STUDIO_URL  (an der Kamera Wi-Fi-Funktion → „Fernsteuerung (EOS Utility)“ starten)"
+    ;;
+  stop)
+    stop_proxy
+    ;;
+  wlan)
+    wlan_setup "${1:-}"
+    ;;
+  usb)
+    stop_proxy; rm -f "$IPFILE"; echo "Umgeschaltet auf USB."
+    ;;
+  status)
+    echo "Verbindung: $MODE${CAM_IP:+ ($CAM_IP)}"
+    if [[ $MODE == WLAN ]]; then
+      [[ -n $(proxy_pid) ]] && echo "Vermittler läuft (PID $(proxy_pid))." || echo "Vermittler läuft nicht."
+      proxy_ready && echo "Kamera angemeldet." || echo "Kamera nicht angemeldet."
+      echo "--- letzte Meldungen:"; tail -5 "$PROXY_LOG" 2>/dev/null
+    fi
+    ;;
+  check)
+    ensure_camera
+    [[ $MODE == USB ]] && gphoto2 --auto-detect
+    "${GP[@]}" --summary 2>&1 | head -12
+    ;;
+  shoot)
+    mkdir -p "$OUT"; ensure_camera
+    cd "$OUT" && "${GP[@]}" --capture-image-and-download --filename "$NAME" && open "$OUT"
+    ;;
+  tether)
+    mkdir -p "$OUT"; ensure_camera
+    echo "Tethering aktiv ($MODE) – an der Kamera auslösen. Fotos gehen nach $OUT. Strg+C beendet."
+    cd "$OUT" && "${GP[@]}" --capture-tethered --keep --filename "$NAME"
+    ;;
+  liveview)
+    command -v ffplay >/dev/null || { echo "ffplay fehlt: brew install ffmpeg"; exit 1; }
+    ensure_camera
+    "${GP[@]}" --capture-movie --stdout 2>/dev/null | ffplay -loglevel error -window_title "EOS 6D Live View" -fflags nobuffer -
+    ;;
+  preview)
+    mkdir -p "$OUT"; ensure_camera
+    # gphoto2 speichert Vorschaubilder mit dem Präfix „thumb_“.
+    cd "$OUT" && "${GP[@]}" --capture-preview --filename preview.jpg --force-overwrite >/dev/null &&
+      open "$OUT/thumb_preview.jpg"
+    ;;
+  settings)
+    ensure_camera
+    "${GP[@]}" --get-config iso --get-config aperture --get-config shutterspeed \
+               --get-config whitebalance --get-config imageformat --get-config batterylevel |
+      grep -E "^(Label|Current)"
+    ;;
+  options)
+    [[ $# -ge 1 ]] || { echo "Welche Einstellung? z. B.: $SELF options iso"; exit 1; }
+    ensure_camera
+    "${GP[@]}" --get-config "$1"
+    ;;
+  set)
+    [[ $# -ge 2 ]] || { echo "Beispiel: $SELF set iso 800"; exit 1; }
+    ensure_camera
+    "${GP[@]}" --set-config "$1=$2" && echo "$1 = $2 gesetzt"
+    ;;
+  shell)
+    mkdir -p "$OUT"; ensure_camera
+    cd "$OUT" && "${GP[@]}" --shell
+    ;;
+  *)
+    usage
+    ;;
+esac

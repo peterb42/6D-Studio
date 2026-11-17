@@ -1,0 +1,33 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "6D Studio (Debug)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/studio/6d-studio.py",
+      "args": ["172.20.10.3"],
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "preLaunchTask": "Studio stoppen"
+    },
+    {
+      "name": "Tests (Debug)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "unittest",
+      "args": ["discover", "-s", "tests", "-v"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Kopplung testen (ptpip-handshake)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/ptpip-handshake.py",
+      "args": ["172.20.10.3"],
+      "console": "integratedTerminal",
+      "preLaunchTask": "Studio stoppen"
+    }
+  ]
+}

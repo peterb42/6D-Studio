@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6D Studio</title>
+<style>
+:root{
+  --bg:#0a0c10; --panel:#12161e; --panel2:#181d27; --line:#252c39; --line2:#3a4458;
+  --text:#dbe1ea; --muted:#8792a5; --accent:#7aa7ff; --ok:#3fb950; --warn:#e3b341; --err:#f85149; --rec:#e5484d;
+  --radius:10px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);
+  font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
+button,select,input{font:inherit;color:inherit}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);
+  background:#0d1017;position:sticky;top:0;z-index:5;flex-wrap:wrap}
+header h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.2px}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:4px 10px;border:1px solid var(--line);border-radius:999px;
+  background:var(--panel);color:var(--muted);font-size:13px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--warn);flex:none}
+.pill.ok .dot{background:var(--ok)} .pill.err .dot{background:var(--err)}
+.badge{padding:3px 9px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);font-weight:650;font-size:13px}
+.spacer{flex:1}
+main{display:grid;grid-template-columns:minmax(0,1fr) 370px;gap:14px;padding:14px;align-items:start}
+@media (max-width:1050px){main{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px}
+.card h2{margin:0 0 10px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:650}
+.side{display:flex;flex-direction:column;gap:14px}
+.toolbar,.under{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.toolbar{margin-bottom:10px}
+.under{margin-top:10px;gap:10px}
+.group{display:inline-flex;align-items:center;gap:4px;padding-right:10px;border-right:1px solid var(--line)}
+.group:last-child{border-right:0}
+.lbl{color:var(--muted);font-size:12px;margin:0 4px 0 2px}
+.btn{background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:6px 10px;cursor:pointer;min-width:34px;line-height:1.2}
+.btn:hover:not(:disabled){border-color:var(--line2)}
+.btn:disabled{opacity:.38;cursor:default}
+.btn.on{background:#1f3357;border-color:var(--accent);color:#fff}
+.stage{position:relative;background:#000;border-radius:8px;overflow:hidden;aspect-ratio:3/2;
+  max-height:calc(100vh - 250px);margin:0 auto;border:1px solid var(--line);user-select:none}
+.stage img{width:100%;height:100%;object-fit:contain;display:block;cursor:crosshair}
+.empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);
+  text-align:center;padding:24px;line-height:1.6}
+.overlay{position:absolute;inset:0;pointer-events:none}
+.cross::before,.cross::after{content:"";position:absolute;background:rgba(255,90,90,.55)}
+.cross::before{left:50%;top:0;bottom:0;width:1px}
+.cross::after{top:50%;left:0;right:0;height:1px}
+.cross i{position:absolute;left:50%;top:50%;width:64px;height:64px;margin:-32px 0 0 -32px;
+  border:1px solid rgba(255,90,90,.55);border-radius:50%}
+.marker{position:absolute;width:26px;height:26px;margin:-13px 0 0 -13px;border:1.5px dashed #ffd166;border-radius:50%;display:none}
+.star{position:absolute;width:34px;height:34px;margin:-17px 0 0 -17px;border:1.5px solid var(--ok);border-radius:5px;display:none}
+.tag{position:absolute;top:10px;background:rgba(0,0,0,.62);padding:3px 8px;border-radius:6px;font-size:12px}
+#zoomtag{left:10px;font-weight:650} #fps{right:10px;color:var(--muted)}
+.focusval{font-variant-numeric:tabular-nums;font-size:20px;font-weight:650;min-width:120px}
+.focusval small{font-size:12px;color:var(--muted);font-weight:500}
+canvas.spark{width:170px;height:36px;background:var(--panel2);border:1px solid var(--line);border-radius:6px}
+input[type=range]{width:100px;accent-color:var(--accent)}
+.field{display:grid;grid-template-columns:96px 1fr;align-items:center;gap:8px;margin:8px 0}
+.field label{color:var(--muted)}
+select{background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:7px 8px;width:100%}
+select:disabled{opacity:.45}
+.note{color:var(--muted);font-size:12px;margin-top:8px}
+.bulbwrap{display:flex;align-items:center;gap:18px}
+.recbtn{width:96px;height:96px;border-radius:50%;border:3px solid var(--line2);flex:none;cursor:pointer;
+  background:radial-gradient(circle at 50% 42%,#ff6b6b,#b9272d);color:#fff;font-weight:750;font-size:17px}
+.recbtn.stop{background:#1b1f28;border-color:var(--rec);color:var(--rec);animation:pulse 1.6s infinite}
+.recbtn:disabled{opacity:.33;cursor:default;animation:none}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(229,72,77,.5)}50%{box-shadow:0 0 0 12px rgba(229,72,77,0)}}
+.timer{font-size:36px;font-weight:700;font-variant-numeric:tabular-nums}
+.timer small{display:block;font-size:12px;color:var(--muted);font-weight:500}
+.bar{height:6px;background:var(--panel2);border-radius:4px;overflow:hidden;margin-top:10px}
+.bar>div{height:100%;width:0;background:var(--rec);transition:width .25s linear}
+#dlbar>div{background:var(--accent)}
+.dur{display:flex;align-items:center;gap:6px;margin-top:12px;color:var(--muted)}
+.dur input{width:62px;background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:6px 8px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chip{padding:4px 10px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);cursor:pointer;font-size:12px}
+.chip.on{border-color:var(--accent);color:#fff;background:#1f3357}
+.photo img.main{width:100%;border-radius:8px;border:1px solid var(--line);display:block;background:#000}
+.thumbs{display:flex;gap:6px;margin-top:8px;overflow-x:auto}
+.thumbs img{height:46px;border-radius:5px;border:1px solid var(--line);cursor:pointer}
+.log{font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:#aab3c2;max-height:230px;overflow:auto;white-space:pre-wrap}
+.toggle{display:flex;align-items:center;gap:8px;margin-top:10px;color:var(--muted);cursor:pointer}
+.hint{font-size:12px;color:var(--muted)}
+kbd{font:11px ui-monospace,Menlo,monospace;padding:1px 5px;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;background:var(--panel2)}
+#toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:20}
+.toast{background:#2a1215;border:1px solid var(--err);color:#ffd7d7;padding:9px 12px;border-radius:8px;max-width:400px;box-shadow:0 6px 20px #0008}
+.toast.info{background:#132033;border-color:var(--accent);color:#dbe8ff}
+#red{position:fixed;inset:0;background:#f00;mix-blend-mode:multiply;pointer-events:none;z-index:50;display:none}
+body.night #red{display:block}
+</style>
+</head>
+<body>
+<div id="red"></div>
+<header>
+  <h1>6D Studio</h1>
+  <span id="conn" class="pill"><span class="dot"></span><span id="connText">Verbinde …</span></span>
+  <span class="badge" id="mode" title="Stellung des Moduswahlrads">Modus –</span>
+  <span class="spacer"></span>
+  <span class="hint" id="out"></span>
+  <button class="btn" id="nightBtn" title="Rotes Licht schont die Dunkelanpassung der Augen (Taste N)">Nachtmodus</button>
+</header>
+
+<main>
+  <section class="card">
+    <div class="toolbar">
+      <div class="group"><button class="btn" id="lvBtn">Livebild</button></div>
+      <div class="group"><span class="lbl">Lupe</span>
+        <button class="btn z" data-z="1">1×</button><button class="btn z" data-z="5">5×</button><button class="btn z" data-z="10">10×</button>
+      </div>
+      <div class="group"><span class="lbl">Ausschnitt</span>
+        <button class="btn mv" data-dx="-1" data-dy="0" title="nach links">◀</button>
+        <button class="btn mv" data-dx="0" data-dy="-1" title="nach oben">▲</button>
+        <button class="btn mv" data-dx="0" data-dy="1" title="nach unten">▼</button>
+        <button class="btn mv" data-dx="1" data-dy="0" title="nach rechts">▶</button>
+        <button class="btn" id="centerBtn" title="Lupe auf Bildmitte">Mitte</button>
+      </div>
+      <div class="group"><button class="btn" id="crossBtn" title="Fadenkreuz einblenden">Fadenkreuz</button></div>
+    </div>
+
+    <div class="stage" id="stage">
+      <img id="lv" alt="" draggable="false">
+      <div class="empty" id="empty"></div>
+      <div class="overlay cross" id="cross" hidden><i></i></div>
+      <div class="overlay"><div class="marker" id="marker"></div><div class="star" id="starbox"></div></div>
+      <div class="tag" id="zoomtag" hidden></div>
+      <div class="tag" id="fps" hidden></div>
+    </div>
+
+    <div class="under">
+      <div class="group"><span class="lbl">Fokus</span>
+        <button class="btn fc" data-s="-3" title="nah – großer Schritt">⟪</button>
+        <button class="btn fc" data-s="-2" title="nah – mittlerer Schritt">‹‹</button>
+        <button class="btn fc" data-s="-1" title="nah – feiner Schritt (Taste ,)">‹</button>
+        <span class="lbl">nah · fern</span>
+        <button class="btn fc" data-s="1" title="fern – feiner Schritt (Taste .)">›</button>
+        <button class="btn fc" data-s="2" title="fern – mittlerer Schritt">››</button>
+        <button class="btn fc" data-s="3" title="fern – großer Schritt">⟫</button>
+      </div>
+      <div class="group" title="Durchmesser des hellsten Sterns im Bild – je kleiner, desto schärfer">
+        <span class="lbl">Stern-Ø</span><span class="focusval" id="fval">–</span>
+        <canvas class="spark" id="spark" width="340" height="72" title="Verlauf – tiefer = schärfer"></canvas>
+        <button class="btn" id="fReset" title="Verlauf und Bestwert zurücksetzen">↺</button>
+      </div>
+      <div class="group" title="Wirkt nur auf die Anzeige, nicht auf das Foto">
+        <span class="lbl">Anzeige hell</span><input type="range" id="bright" min="1" max="8" step="0.25" value="1">
+        <span class="lbl">Kontrast</span><input type="range" id="contrast" min="1" max="4" step="0.1" value="1">
+      </div>
+    </div>
+    <div class="note">
+      Scharfstellen: Livebild an, hellen Stern per Klick als Ziel wählen (oder in die Bildmitte schwenken), Lupe 10×, dann
+      fokussieren, bis der Stern-Ø am kleinsten ist. Doppelklick ins Bild = 10× an dieser Stelle.
+      Fokusantrieb nur mit AF-Objektiv (Schalter auf AF) – bei MF-Objektiven am Ring drehen.
+      Tasten: <kbd>L</kbd> Livebild · <kbd>1</kbd> <kbd>5</kbd> <kbd>0</kbd> Lupe · Pfeile Ausschnitt ·
+      <kbd>,</kbd> <kbd>.</kbd> Fokus fein · <kbd>N</kbd> Nachtmodus
+    </div>
+  </section>
+
+  <aside class="side">
+    <section class="card">
+      <h2>Belichtung</h2>
+      <div class="field"><label for="iso">ISO</label><select id="iso"></select></div>
+      <div class="field"><label for="aperture">Blende</label><select id="aperture"></select></div>
+      <div class="field"><label for="shutter">Zeit</label><select id="shutter"></select></div>
+      <div class="note" id="expNote"></div>
+    </section>
+
+    <section class="card">
+      <h2>Bulb-Aufnahme</h2>
+      <div class="bulbwrap">
+        <button class="recbtn" id="bulbBtn">Start</button>
+        <div class="timer"><span id="tval">0:00</span><small id="tsub">bereit</small></div>
+      </div>
+      <div class="bar" id="bar" hidden><div></div></div>
+      <div class="dur">Auto-Stopp nach
+        <input type="number" id="durMin" min="0" max="999" value="0"> min
+        <input type="number" id="durSec" min="0" max="59" value="0"> s
+      </div>
+      <div class="chips">
+        <span class="chip" data-s="0">manuell</span><span class="chip" data-s="15">15 s</span>
+        <span class="chip" data-s="30">30 s</span><span class="chip" data-s="60">1 min</span>
+        <span class="chip" data-s="120">2 min</span><span class="chip" data-s="240">4 min</span>
+        <span class="chip" data-s="480">8 min</span>
+      </div>
+      <div class="note" id="bulbNote"></div>
+      <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
+        <button class="btn" id="shootBtn">Auslösen</button><span class="hint">für normale Zeiten (nicht im Modus B)</span>
+      </div>
+    </section>
+
+    <section class="card photo">
+      <h2>Letztes Foto</h2>
+      <div id="photoBox" class="hint">Noch keine Aufnahme in dieser Sitzung.</div>
+      <div class="hint" id="dltext" hidden></div>
+      <div class="bar" id="dlbar" hidden><div></div></div>
+      <div class="thumbs" id="thumbs"></div>
+      <label class="toggle"><input type="checkbox" id="autodl"> Fotos nach der Aufnahme automatisch auf den Mac laden</label>
+    </section>
+
+    <section class="card">
+      <h2>Protokoll</h2>
+      <div class="log" id="log"></div>
+    </section>
+  </aside>
+</main>
+<div id="toasts"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('6d.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('6d.' + k, JSON.stringify(v)); } catch {} }
+};
+function fmt(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  return h ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`;
+}
+
+let S = null, seq = 0, lvUrl = null, target = null, clockOffset = 0, lastBulb = null;
+
+// ---------------------------------------------------------------- Server
+function toast(msg, kind) {
+  const t = document.createElement('div');
+  t.className = 'toast' + (kind === 'info' ? ' info' : '');
+  t.textContent = msg;
+  $('#toasts').appendChild(t);
+  setTimeout(() => t.remove(), kind === 'info' ? 2500 : 7000);
+}
+async function api(path, body) {
+  try {
+    const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
+    const j = await r.json();
+    if (!j.ok) toast(j.error || 'Fehler');
+    poll(true);
+    return j.ok;
+  } catch (e) { toast('6D Studio ist nicht erreichbar'); return false; }
+}
+async function poll(once) {
+  try {
+    const r = await fetch('/api/state', {cache: 'no-store'});
+    S = await r.json();
+    render();
+  } catch (e) {
+    S = null;
+    $('#conn').className = 'pill err';
+    $('#connText').textContent = '6D Studio läuft nicht – im Terminal „6d-fernsteuerung studio“';
+  }
+  if (!once) setTimeout(poll, 700);
+}
+
+// ---------------------------------------------------------------- Anzeige
+function fillSelect(id, p, disabled) {
+  const el = $('#' + id);
+  const key = JSON.stringify(p.options);
+  if (el.dataset.key !== key) {
+    el.innerHTML = '';
+    if (!p.options.length) el.add(new Option(p.label, ''));
+    for (const [v, l] of p.options) el.add(new Option(l, v));
+    el.dataset.key = key;
+  }
+  if (document.activeElement !== el && !el.dataset.pending) {
+    if (p.options.length) {
+      if (![...el.options].some(o => o.value === String(p.value))) el.add(new Option(p.label, p.value));
+      el.value = String(p.value);
+    } else el.options[0].text = p.label;
+  }
+  el.disabled = disabled || !p.options.length;
+}
+
+function render() {
+  const lv = S.liveview, b = S.bulb;
+  $('#conn').className = 'pill ' + (S.connected ? 'ok' : S.status.startsWith('Getrennt') ? 'err' : '');
+  $('#connText').textContent = S.connected ? `${S.model} · ${S.ip}` : S.status + ' …';
+  $('#mode').textContent = 'Modus ' + (S.connected ? S.mode : '–');
+  $('#out').textContent = 'Fotos: ' + S.out.replace(/^\/Users\/[^/]+/, '~');
+
+  fillSelect('iso', S.iso, !S.connected);
+  fillSelect('aperture', S.aperture, !S.connected);
+  fillSelect('shutter', S.bulb_mode ? {value: null, label: 'Bulb (Moduswahlrad B)', options: []} : S.shutter,
+             !S.connected || S.bulb_mode);
+  $('#expNote').textContent = !S.connected ? 'Kamera nicht verbunden.'
+    : S.bulb_mode ? 'Modus B: Die Belichtungszeit bestimmst du mit Start/Stopp.'
+    : S.aperture.label === '–' ? 'Keine Blende gemeldet (manuelles Objektiv?) – dann am Objektiv einstellen.' : '';
+
+  // Livebild
+  $('#lvBtn').classList.toggle('on', lv.on);
+  $('#lvBtn').textContent = lv.on ? '● Livebild an' : 'Livebild aus';
+  $('#lvBtn').disabled = !S.connected;
+  $$('.z').forEach(x => { x.classList.toggle('on', lv.on && +x.dataset.z === lv.zoom); x.disabled = !S.connected || !lv.on || !lv.can_zoom; });
+  $$('.mv,#centerBtn').forEach(x => x.disabled = !S.connected || !lv.on || !lv.can_move);
+  $$('.fc').forEach(x => x.disabled = !S.connected || !lv.on || !lv.can_focus);
+  $('#zoomtag').hidden = !(lv.on && lv.zoom > 1);
+  $('#zoomtag').textContent = `Lupe ${lv.zoom}×`;
+  $('#fps').hidden = !(lv.on && lv.fps > 0);
+  $('#fps').textContent = `${lv.fps} B/s`;
+  if (lv.seq < seq) seq = 0;          // Studio wurde neu gestartet
+  if (!lv.on && lvUrl) { URL.revokeObjectURL(lvUrl); lvUrl = null; $('#lv').removeAttribute('src'); showFocus(null); }
+  const empty = !S.connected ? 'Kamera nicht verbunden.<br>' + esc(S.status)
+    : !lv.on ? 'Livebild ist aus.<br>Zum Scharfstellen „Livebild“ einschalten.'
+    : b.active ? 'Belichtung läuft – Livebild pausiert.'
+    : !lvUrl ? 'Warte auf das Livebild …' : '';
+  $('#empty').innerHTML = empty;
+  $('#empty').style.display = empty ? 'flex' : 'none';
+  placeMarker();
+
+  // Bulb
+  if (b.active) clockOffset = b.now - Date.now() / 1000;
+  if (b.active) lastBulb = b;
+  const bb = $('#bulbBtn');
+  bb.textContent = b.active ? 'Stopp' : 'Start';
+  bb.classList.toggle('stop', b.active);
+  bb.disabled = !b.active && (!S.connected || !S.bulb_mode);
+  $('#bulbNote').textContent = S.connected && !S.bulb_mode && !b.active ? 'Für Bulb das Moduswahlrad der Kamera auf B stellen.' : '';
+  $('#shootBtn').disabled = !S.connected || S.bulb_mode || b.active;
+
+  // Fotos
+  const ph = S.photos;
+  if (ph.length && $('#photoBox').dataset.name !== ph[0].name) {
+    const p = ph[0];
+    $('#photoBox').dataset.name = p.name;
+    $('#photoBox').className = '';
+    $('#photoBox').innerHTML = (p.preview
+        ? `<a href="/preview/${encodeURIComponent(p.preview)}" target="_blank" title="Vorschau groß öffnen"><img class="main" src="/preview/${encodeURIComponent(p.preview)}" alt=""></a>`
+        : '') + `<div class="hint" style="margin-top:6px">${esc(p.name)} · ${(p.size / 1e6).toFixed(1)} MB · ${esc(p.time)}</div>`;
+    $('#thumbs').innerHTML = ph.slice(1, 9).filter(x => x.preview).map(x =>
+      `<img src="/preview/${encodeURIComponent(x.preview)}" title="${esc(x.name)} · ${esc(x.time)}" data-p="${esc(x.preview)}">`).join('');
+  }
+  const dl = S.downloading;
+  $('#dltext').hidden = $('#dlbar').hidden = !dl;
+  if (dl) {
+    const pct = dl.total ? Math.min(100, dl.got / dl.total * 100) : 0;
+    $('#dltext').textContent = `Lade ${dl.name} … ${pct.toFixed(0)} %`;
+    $('#dlbar').firstElementChild.style.width = pct + '%';
+  }
+  if (document.activeElement !== $('#autodl')) $('#autodl').checked = S.autodownload;
+
+  const logText = S.log.slice().reverse().join('\n');
+  if ($('#log').textContent !== logText) $('#log').textContent = logText;
+}
+
+function tick() {
+  const b = S && S.bulb;
+  const bar = $('#bar');
+  if (b && b.active) {
+    const el = Date.now() / 1000 + clockOffset - b.start;
+    $('#tval').textContent = fmt(el);
+    $('#tsub').textContent = b.planned ? `noch ${fmt(b.planned - el)} von ${fmt(b.planned)}` : 'läuft – zum Beenden Stopp drücken';
+    bar.hidden = !b.planned;
+    if (b.planned) bar.firstElementChild.style.width = Math.min(100, el / b.planned * 100) + '%';
+  } else {
+    bar.hidden = true;
+    if (lastBulb && S && S.connected) $('#tsub').textContent = 'zuletzt belichtet';
+    else { $('#tval').textContent = '0:00'; $('#tsub').textContent = 'bereit'; }
+  }
+}
+setInterval(tick, 200);
+
+// ---------------------------------------------------------------- Livebild
+function contentRect() {
+  const img = $('#lv'), st = $('#stage').getBoundingClientRect();
+  const iw = img.naturalWidth || 3, ih = img.naturalHeight || 2;
+  const s = Math.min(st.width / iw, st.height / ih), w = iw * s, h = ih * s;
+  return {left: (st.width - w) / 2, top: (st.height - h) / 2, w, h, st};
+}
+function imgPoint(ev) {
+  const r = contentRect();
+  return {x: Math.min(1, Math.max(0, (ev.clientX - r.st.left - r.left) / r.w)),
+          y: Math.min(1, Math.max(0, (ev.clientY - r.st.top - r.top) / r.h))};
+}
+function placeAt(el, x, y) {
+  const r = contentRect();
+  el.style.left = (r.left + x * r.w) + 'px';
+  el.style.top = (r.top + y * r.h) + 'px';
+}
+function placeMarker() {
+  const m = $('#marker');
+  const show = S && S.liveview.on && S.liveview.zoom === 1 && target;
+  m.style.display = show ? 'block' : 'none';
+  if (show) placeAt(m, target.x, target.y);
+}
+
+async function lvLoop() {
+  for (;;) {
+    if (!S || !S.liveview.on || S.bulb.active) { await sleep(300); continue; }
+    try {
+      const r = await fetch('/api/frame.jpg?after=' + seq, {cache: 'no-store'});
+      if (r.status === 200) {
+        seq = +r.headers.get('X-Frame-Seq') || seq + 1;
+        await showFrame(URL.createObjectURL(await r.blob()));
+      }
+    } catch (e) { await sleep(800); }
+  }
+}
+function showFrame(url) {
+  return new Promise(res => {
+    const img = $('#lv');
+    img.onload = () => {
+      if (lvUrl && lvUrl !== url) URL.revokeObjectURL(lvUrl);
+      lvUrl = url;
+      $('#empty').style.display = 'none';
+      try { analyze(img); } catch (e) {}
+      res();
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); res(); };
+    img.src = url;
+  });
+}
+
+// Schärfe-Messung: Durchmesser des hellsten Sterns bei halber Helligkeit (kleiner = schärfer)
+const cv = document.createElement('canvas');
+const cx = cv.getContext('2d', {willReadFrequently: true});
+let hist = [], best = null;
+function analyze(img) {
+  const w = img.naturalWidth, h = img.naturalHeight;
+  if (!w || !h) return;
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  cx.drawImage(img, 0, 0);
+  const d = cx.getImageData(0, 0, w, h).data;
+  const L = new Uint8Array(w * h);
+  let sum = 0, n = 0;
+  for (let p = 0, i = 0; p < L.length; p++, i += 4) {
+    const r = d[i], g = d[i + 1], b = d[i + 2];
+    const v = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    L[p] = v;
+    if ((p & 31) === 0) { sum += v; n++; }
+  }
+  const bg = sum / n;
+  let bestS = -1, bi = 0;                       // 3×3-Summe: ignoriert einzelne heiße Pixel
+  for (let y = 1; y < h - 1; y++) {
+    const row = y * w;
+    for (let x = 1; x < w - 1; x++) {
+      const i = row + x;
+      if (L[i] < bg + 20) continue;
+      const s = L[i-w-1] + L[i-w] + L[i-w+1] + L[i-1] + L[i] + L[i+1] + L[i+w-1] + L[i+w] + L[i+w+1];
+      if (s > bestS) { bestS = s; bi = i; }
+    }
+  }
+  if (bestS < 0) { showFocus(null); return; }
+  const x0 = bi % w, y0 = (bi / w) | 0;
+  let peak = 0;
+  for (let y = y0 - 1; y <= y0 + 1; y++) for (let x = x0 - 1; x <= x0 + 1; x++) peak = Math.max(peak, L[y * w + x]);
+  if (peak - bg < 30) { showFocus(null); return; }
+  const thr = bg + (peak - bg) / 2, R = 30;
+  let area = 0;
+  for (let y = Math.max(0, y0 - R); y <= Math.min(h - 1, y0 + R); y++)
+    for (let x = Math.max(0, x0 - R); x <= Math.min(w - 1, x0 + R); x++)
+      if (L[y * w + x] >= thr) area++;
+  showFocus({d: 2 * Math.sqrt(area / Math.PI), x: x0 / w, y: y0 / h, sat: peak >= 250});
+}
+function showFocus(f) {
+  const box = $('#starbox');
+  if (!f) {
+    $('#fval').innerHTML = '–<small> kein Stern</small>';
+    box.style.display = 'none';
+    return;
+  }
+  hist.push(f.d);
+  if (hist.length > 90) hist.shift();
+  best = best === null ? f.d : Math.min(best, f.d);
+  $('#fval').innerHTML = `${f.d.toFixed(1)}<small> px · best ${best.toFixed(1)}${f.sat ? ' · überbelichtet' : ''}</small>`;
+  box.style.display = 'block';
+  placeAt(box, f.x, f.y);
+  drawSpark();
+}
+function drawSpark() {
+  const c = $('#spark'), g = c.getContext('2d');
+  g.clearRect(0, 0, c.width, c.height);
+  if (hist.length < 2) return;
+  const mx = Math.max(...hist), mn = Math.min(...hist), span = Math.max(mx - mn, 0.5);
+  g.strokeStyle = '#7aa7ff'; g.lineWidth = 2; g.beginPath();
+  hist.forEach((v, i) => {
+    const x = i / 89 * c.width, y = c.height - 6 - (v - mn) / span * (c.height - 12);
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  });
+  g.stroke();
+}
+
+// ---------------------------------------------------------------- Bedienung
+async function zoomTo(z) {
+  const body = {level: z};
+  if (z > 1 && target && S && S.liveview.zoom === 1) { body.x = target.x; body.y = target.y; }
+  await api('/api/zoom', body);
+}
+$('#lvBtn').onclick = () => api('/api/liveview', {on: !(S && S.liveview.on)});
+$$('.z').forEach(b => b.onclick = () => zoomTo(+b.dataset.z));
+$$('.mv').forEach(b => b.onclick = () => api('/api/zoommove', {dx: +b.dataset.dx, dy: +b.dataset.dy}));
+$('#centerBtn').onclick = () => { target = null; api('/api/zoommove', {center: true}); };
+$$('.fc').forEach(b => b.onclick = () => api('/api/focus', {step: +b.dataset.s}));
+$('#fReset').onclick = () => { hist = []; best = null; drawSpark(); };
+
+$('#lv').addEventListener('click', ev => {
+  if (!S || !S.liveview.on || S.liveview.zoom !== 1) return;
+  target = imgPoint(ev);
+  placeMarker();
+});
+$('#lv').addEventListener('dblclick', ev => {
+  if (!S || !S.liveview.on) return;
+  if (S.liveview.zoom === 1) { target = imgPoint(ev); zoomTo(10); } else zoomTo(1);
+});
+window.addEventListener('resize', placeMarker);
+
+for (const id of ['iso', 'aperture', 'shutter']) {
+  $('#' + id).addEventListener('change', async e => {
+    const el = e.target;
+    if (el.value === '') return;
+    el.dataset.pending = '1';
+    await api('/api/set', {prop: id, value: +el.value});
+    delete el.dataset.pending;
+    el.blur();
+  });
+}
+
+let selDur = store.get('dur', 0);
+function setDur(s, fromInput) {
+  selDur = Math.max(0, Math.round(s) || 0);
+  if (!fromInput) { $('#durMin').value = Math.floor(selDur / 60); $('#durSec').value = selDur % 60; }
+  store.set('dur', selDur);
+  $$('.chip').forEach(c => c.classList.toggle('on', +c.dataset.s === selDur));
+}
+$$('.chip').forEach(c => c.onclick = () => setDur(+c.dataset.s));
+['#durMin', '#durSec'].forEach(id => $(id).addEventListener('input',
+  () => setDur((+$('#durMin').value || 0) * 60 + (+$('#durSec').value || 0), true)));
+setDur(selDur);
+
+$('#bulbBtn').onclick = async () => {
+  const bb = $('#bulbBtn');
+  bb.disabled = true;
+  if (S && S.bulb.active) await api('/api/bulb/stop');
+  else await api('/api/bulb/start', {seconds: selDur});
+  bb.disabled = false;
+};
+$('#shootBtn').onclick = async () => { $('#shootBtn').disabled = true; await api('/api/shoot'); };
+$('#autodl').onchange = e => api('/api/autodownload', {on: e.target.checked});
+$('#thumbs').addEventListener('click', e => { if (e.target.dataset.p) window.open('/preview/' + encodeURIComponent(e.target.dataset.p), '_blank'); });
+
+function applyView() {
+  const br = +$('#bright').value, co = +$('#contrast').value;
+  $('#lv').style.filter = (br !== 1 || co !== 1) ? `brightness(${br}) contrast(${co})` : '';
+  store.set('bright', br); store.set('contrast', co);
+}
+$('#bright').value = store.get('bright', 1); $('#contrast').value = store.get('contrast', 1);
+$('#bright').oninput = $('#contrast').oninput = applyView;
+applyView();
+
+function setCross(on) { $('#cross').hidden = !on; $('#crossBtn').classList.toggle('on', on); store.set('cross', on); }
+$('#crossBtn').onclick = () => setCross($('#cross').hidden);
+setCross(store.get('cross', false));
+
+function setNight(on) { document.body.classList.toggle('night', on); $('#nightBtn').classList.toggle('on', on); store.set('night', on); }
+$('#nightBtn').onclick = () => setNight(!document.body.classList.contains('night'));
+setNight(store.get('night', false));
+
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input, select, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
+  const k = e.key;
+  const zoomed = S && S.liveview.on && S.liveview.zoom > 1;
+  const arrows = {ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1]};
+  if (k === 'l' || k === 'L') $('#lvBtn').click();
+  else if (k === '1') zoomTo(1);
+  else if (k === '5') zoomTo(5);
+  else if (k === '0') zoomTo(10);
+  else if (arrows[k] && zoomed) { e.preventDefault(); api('/api/zoommove', {dx: arrows[k][0], dy: arrows[k][1]}); }
+  else if (k === ',') api('/api/focus', {step: -1});
+  else if (k === '.') api('/api/focus', {step: 1});
+  else if (k === 'n' || k === 'N') $('#nightBtn').click();
+});
+
+poll();
+lvLoop();
+</script>
+</body>
+</html>
