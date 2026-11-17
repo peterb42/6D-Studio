@@ -131,6 +131,8 @@ Aufruf: $SELF <befehl> [argumente]      Verbindung: $MODE${CAM_IP:+ ($CAM_IP)}
   studio             Bedienoberfläche im Browser öffnen (Livebild, Lupe, Fokus, Bulb, ISO/Blende/Zeit)
   wlan [ip]          WLAN-Modus einrichten (Kamera suchen, Vermittler starten)
   stop               6D Studio / Vermittler beenden
+  sim [optionen]     Simulierte 6D + Studio auf http://127.0.0.1:8067 (zum Entwickeln ohne Kamera)
+  sim-stop           Simulator beenden
   usb                Zurück auf USB-Kabel (beendet den Vermittler)
   status             Zustand der WLAN-Verbindung anzeigen
   check              Kamera-Infos anzeigen
@@ -160,6 +162,22 @@ case "$cmd" in
     ;;
   stop)
     stop_proxy
+    ;;
+  sim)
+    # Simulierte 6D + eigenes Studio (Port 8067) – läuft parallel zum echten Studio.
+    ROOT=${0:A:h:h}
+    pkill -f "sim/sim6d.py" 2>/dev/null; pkill -f "6d-studio.py 127.0.0.1" 2>/dev/null; sleep 0.5
+    mkdir -p "$GPDIR"
+    nohup /usr/bin/python3 -I -u "$ROOT/sim/sim6d.py" --port 15741 "$@" > "$GPDIR/6d-sim.log" 2>&1 &!
+    CAM_PORT=15741 GPHOTO_PORT=15742 STUDIO_PORT=8067 OUT="$HOME/Pictures/6D-Tethering/Simulator" \
+      nohup /usr/bin/python3 -I -u "$ROOT/studio/6d-studio.py" 127.0.0.1 > "$GPDIR/6d-sim-studio.log" 2>&1 &!
+    for i in {1..30}; do curl -s -o /dev/null http://127.0.0.1:8067/api/state && break; sleep 0.2; done
+    open http://127.0.0.1:8067
+    echo "Simulator läuft – Studio: http://127.0.0.1:8067  (Protokolle: $GPDIR/6d-sim*.log, beenden: $SELF sim-stop)"
+    ;;
+  sim-stop)
+    pkill -f "sim/sim6d.py" && echo "Simulator beendet."
+    pkill -f "6d-studio.py 127.0.0.1" && echo "Simulator-Studio beendet."
     ;;
   wlan)
     wlan_setup "${1:-}"

@@ -12,6 +12,30 @@
       "preLaunchTask": "Studio stoppen"
     },
     {
+      "name": "Simulator (6D)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/sim/sim6d.py",
+      "args": ["--port", "15741", "--verbose"],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Studio gegen Simulator",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/studio/6d-studio.py",
+      "args": ["127.0.0.1"],
+      "env": {
+        "CAM_PORT": "15741",
+        "GPHOTO_PORT": "15742",
+        "STUDIO_PORT": "8067",
+        "OUT": "${env:HOME}/Pictures/6D-Tethering/Simulator"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
       "name": "Tests (Debug)",
       "type": "debugpy",
       "request": "launch",
@@ -28,6 +52,14 @@
       "args": ["172.20.10.3"],
       "console": "integratedTerminal",
       "preLaunchTask": "Studio stoppen"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Simulator + Studio (Debug)",
+      "configurations": ["Simulator (6D)", "Studio gegen Simulator"],
+      "preLaunchTask": "Simulator stoppen",
+      "stopAll": true
     }
   ]
 }

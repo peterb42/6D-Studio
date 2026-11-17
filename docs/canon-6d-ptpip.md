@@ -84,6 +84,15 @@ Im Modus B behält 0xD102 den letzten M-Wert (z. B. 1/100) – Bulb erkennt man 
 | 0xC194 | Bulb-Belichtungszeit (beobachtet, nicht ausgewertet) |
 | 0xC185 | Speicher-Info geändert (beobachtet) |
 
+## Simulator (`sim/sim6d.py`)
+
+Bildet die Punkte oben nach. Wo das Verhalten der echten 6D **offen** ist, folgt er den Annahmen des
+Studios – Tests gegen den Simulator beweisen dort nur, dass Studio und Simulator zusammenpassen:
+- `ZoomPosition(x, y)` = linke obere Ecke des Lupen-Ausschnitts im Koordinatensystem 5472×3648.
+- `DriveLens`: Schritte 1/8/40 „Fokuseinheiten“; Schärfe bei Abstand 0.
+
+Gegen die echte Kamera prüfen und hier eintragen, sobald getestet.
+
 ## Download
 
 - `GetObjectInfo` (0x1008) → Dateiname ab Offset 52, Größe bei Offset 8; dann `GetObject` (0x1009).

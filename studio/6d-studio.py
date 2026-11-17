@@ -13,6 +13,7 @@ Eigenheiten der 6D, die hier abgefangen werden:
   * Ohne regelmäßige Abfragen trennt die 6D nach ~30 s.
 
 Aufruf: 6d-studio [kamera-ip]
+Umgebung: CAM_PORT (15740), GPHOTO_PORT (15740), STUDIO_PORT (8066), OUT (~/Pictures/6D-Tethering)
 """
 import collections
 import json
@@ -43,7 +44,10 @@ def _default_ip():
 
 
 CAM_IP = sys.argv[1] if len(sys.argv) > 1 else _default_ip()
-PTPIP_PORT = 15740
+# Ports – per Umgebungsvariable änderbar, damit ein Studio gegen den Simulator (sim/sim6d.py)
+# parallel zum echten laufen kann.
+CAM_PORT = int(os.environ.get("CAM_PORT", "15740"))         # PTP/IP-Port der Kamera
+GPHOTO_PORT = int(os.environ.get("GPHOTO_PORT", "15740"))   # lokaler Zugang für gphoto2 (127.0.0.1)
 WEB_PORT = int(os.environ.get("STUDIO_PORT", "8066"))
 OUT = os.path.expanduser(os.environ.get("OUT", "~/Pictures/6D-Tethering"))
 PREVIEW_DIR = os.path.join(OUT, ".vorschau")
@@ -312,6 +316,7 @@ class Studio:
         self.client_queue = []
         self.internal_queue = []
         self.last_event = self.last_frame_req = self.last_cam = 0.0
+        self.gphoto_port = None
         os.makedirs(PREVIEW_DIR, exist_ok=True)
 
     # ---------- Protokoll
@@ -330,7 +335,7 @@ class Studio:
             time.sleep(1)
         while True:
             try:
-                cmd = socket.create_connection((CAM_IP, PTPIP_PORT), timeout=5)
+                cmd = socket.create_connection((CAM_IP, CAM_PORT), timeout=5)
                 break
             except OSError:
                 time.sleep(1)
@@ -345,7 +350,7 @@ class Studio:
         if ptype(ack) != INIT_CMD_ACK:
             raise CameraLost("unerwartete Antwort Typ %d" % ptype(ack))
         conn_id = struct.unpack_from("<I", ack, 8)[0]
-        evt = socket.create_connection((CAM_IP, PTPIP_PORT), timeout=10)
+        evt = socket.create_connection((CAM_IP, CAM_PORT), timeout=10)
         evt.sendall(struct.pack("<III", 12, INIT_EVT_REQ, conn_id))
         evt_ack = recv_packet(evt, 30)
         if ptype(evt_ack) != INIT_EVT_ACK:
@@ -645,8 +650,9 @@ class Studio:
     def camera_thread(self, guid, name):
         lst = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         lst.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        lst.bind(("127.0.0.1", PTPIP_PORT))
+        lst.bind(("127.0.0.1", GPHOTO_PORT))
         lst.listen(4)
+        self.gphoto_port = lst.getsockname()[1]
         while True:
             try:
                 self.login(guid, name)

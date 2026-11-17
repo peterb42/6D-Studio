@@ -30,6 +30,27 @@
       "presentation": { "reveal": "always", "panel": "dedicated" }
     },
     {
+      "label": "Simulator + Studio starten",
+      "type": "shell",
+      "command": "${workspaceFolder}/bin/6d-fernsteuerung sim",
+      "problemMatcher": []
+    },
+    {
+      "label": "Simulator stoppen",
+      "type": "shell",
+      "command": "${workspaceFolder}/bin/6d-fernsteuerung sim-stop; true",
+      "problemMatcher": [],
+      "presentation": { "reveal": "silent", "panel": "shared" }
+    },
+    {
+      "label": "Simulator-Protokoll verfolgen",
+      "type": "shell",
+      "command": "tail -n 40 -f ~/.gphoto/6d-sim.log ~/.gphoto/6d-sim-studio.log",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
       "label": "Status",
       "type": "shell",
       "command": "${workspaceFolder}/bin/6d-fernsteuerung status",
