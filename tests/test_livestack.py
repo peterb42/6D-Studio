@@ -233,6 +233,14 @@ class TestBibliothek(unittest.TestCase):
         self.lib.delete("bias/" + self.b_old)
         self.assertEqual(len(self.lib.list()), 5)
 
+    @unittest.skipUnless(HAS_RAWPY, "braucht rawpy (venv)")
+    def test_zu_kurze_darks_sind_bias(self):
+        meta = {"exposure": 1 / 4000, "iso": 3200, "temp": 24.0, "time": None, "model": "Canon EOS 6D"}
+        frames = [("/gibt/es/nicht_%d.CR2" % i, dict(meta)) for i in range(3)]   # wird vor dem Laden abgelehnt
+        with self.assertRaisesRegex(ValueError, "Bias"):
+            calib.build_master(self.lib, "dark", frames, log=lambda *a: None)
+        self.assertEqual(len(self.lib.list()), 6)
+
 
 @unittest.skipUnless(HAS_NUMPY and HAS_RAWPY, "braucht numpy und rawpy (venv)")
 class TestMasterUndStack(unittest.TestCase):

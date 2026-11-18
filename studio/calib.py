@@ -31,6 +31,7 @@ KINDS = {"bias": {"folder": "bias", "label": "Bias", "imagetyp": "Master Bias", 
 KAPPA = 3.0
 MIN_FRAMES = 3
 LIBRARY_FOLDER = "Bibliothek"
+DARK_MIN_EXPOSURE = 0.8      # kürzere „Darks“ sind Bias (kein Wärmesignal); unter 1 s, weil Bulb-Zeiten schwanken
 
 
 def _exposure_class(dark_exp, light_exp, optimize):
@@ -197,6 +198,13 @@ def build_master(library, kind, frames, progress=None, log=print, exposure=None)
     n = len(frames)
     if n < MIN_FRAMES:
         raise ValueError("Zu wenige RAW-Bilder (%d) – mindestens %d" % (n, MIN_FRAMES))
+    metas = [m for _, m in frames]
+    if exposure is None:
+        exps = sorted(m["exposure"] for m in metas if m["exposure"])
+        exposure = exps[len(exps) // 2] if exps else None
+    if kind == "dark" and exposure and exposure < DARK_MIN_EXPOSURE:
+        raise ValueError("Darks mit 1/%d s sind eigentlich Bias – als Master-Bias erstellen (Ordner biases) oder "
+                         "Darks mit der Zeit der Lights aufnehmen" % round(1 / exposure))
     progress = progress or (lambda *a: None)
     info = KINDS[kind]
     t0 = time.time()
@@ -259,11 +267,7 @@ def build_master(library, kind, frames, progress=None, log=print, exposure=None)
 
     med, noise = _robust(master)
     hot = int(np.count_nonzero(master > med + max(10 * noise, 20.0))) if kind == "dark" else None
-    metas = [m for _, m in frames]
     temps = [m["temp"] for m in metas if m["temp"] is not None]
-    if exposure is None:
-        exps = sorted(m["exposure"] for m in metas if m["exposure"])
-        exposure = exps[len(exps) // 2] if exps else None
     iso = metas[0]["iso"]
     when = metas[0]["time"] or time.strftime("%Y-%m-%d %H:%M:%S")
     temp = round(sum(temps) / len(temps), 1) if temps else None

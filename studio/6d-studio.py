@@ -971,6 +971,13 @@ class Studio:
             if self.master_job and self.master_job["active"]:
                 raise CameraError("Es wird gerade ein Master erstellt – bitte warten")
             download = "raw"
+        if master and ftype == "dark":                       # z. B. Kamera steht noch auf 1/4000 von den Bias
+            exp = exposure if bulb else shutter_seconds(self.props.get(P_SHUTTER))
+            if not exp:
+                raise CameraError("Darks: Moduswahlrad auf B oder M und die Zeit der Lights einstellen")
+            if exp < calib.DARK_MIN_EXPOSURE:
+                raise CameraError("Darks mit %s wären nur Bias – an der Kamera die Zeit der Lights einstellen (ab 1 s)"
+                                  % ("%g s" % exp if bulb else fmt_shutter(self.props.get(P_SHUTTER))))
         if ftype == "bias":                                          # kürzeste Zeit einstellen
             fastest = max(self.avail.get(P_SHUTTER) or [0])
             if fastest and self.props.get(P_SHUTTER) != fastest:

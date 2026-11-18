@@ -840,6 +840,7 @@ const WIZ_TEXT = {
         'nach den Lights, solange die Kamera gleich warm ist. Die Dark-Optimierung gleicht kleine Temperatur­unterschiede aus.',
 };
 let wiz = {open: false, kind: store.get('wiz.kind', 'dark'), sid: null};
+const DARK_MIN_EXPOSURE = 0.8;             // wie calib.DARK_MIN_EXPOSURE: kürzere Darks sind nur Bias
 function wizChecks() {
   const ll = S.last_light, k = wiz.kind, out = [];
   const mode = S.mode, modeOk = k === 'bias' ? mode === 'M' : (mode === 'B' || mode === 'M');
@@ -849,9 +850,17 @@ function wizChecks() {
     `ISO ${iso}` + (String(ll.iso) === iso ? ' – wie die letzten Lights' : ` – die letzten Lights hatten ISO ${ll.iso}`)]);
   else out.push([iso && iso !== '–' && iso !== 'Auto' ? true : null, `ISO ${iso} – dieselbe wie bei den Lights`]);
   if (k === 'bias') out.push([true, 'Zeit: das Studio stellt die kürzeste Zeit (1/4000) ein']);
-  else if (!S.bulb_mode && ll && ll.exposure) {
-    const cam = S.shutter.label, same = Math.abs(parseShutter(cam) / ll.exposure - 1) < 0.05;
-    out.push([same ? true : null, `Zeit der Kamera ${cam}` + (same ? ' – wie die Lights' : ` – Lights: ${fmtExp(ll.exposure)}`)]);
+  else {
+    const exp = S.bulb_mode ? wizExposure() : parseShutter(S.shutter.label);
+    const cam = S.bulb_mode ? `Bulb ${fmtExp(exp)}` : `Zeit der Kamera ${S.shutter.label}`;
+    const same = ll && ll.exposure && Math.abs(exp / ll.exposure - 1) < 0.05;
+    if (!exp) out.push([false, S.bulb_mode ? 'Belichtungszeit unten eintragen – dieselbe wie bei den Lights'
+      : 'Zeit der Lights an der Kamera einstellen']);
+    else if (exp < DARK_MIN_EXPOSURE) out.push([false, `${cam} – zu kurz, das wären nur Bias. ` +
+      (ll && ll.exposure ? `Zeit der Lights einstellen: ${fmtExp(ll.exposure)}` : 'Zeit der Lights einstellen (ab 1 s)')]);
+    else if (ll && ll.exposure) out.push([same ? true : null,
+      cam + (same ? ' – wie die Lights' : ` – Lights: ${fmtExp(ll.exposure)}`)]);
+    else out.push([null, `${cam} – muss genau die Zeit der Lights sein (noch keine Lights aufgenommen)`]);
   }
   if (k === 'dark' && ll && ll.temp !== null && ll.temp !== undefined)
     out.push([true, `Lights hatten ${fmtTemp(ll.temp)} – Darks jetzt aufnehmen, solange es so bleibt`]);

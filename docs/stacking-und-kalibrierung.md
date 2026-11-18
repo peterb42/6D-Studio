@@ -163,9 +163,11 @@ heraus; ohne Ausreißer ist das Ergebnis gleich dem einfachen Mittel (Abweichung
 
 1. **Was?** Bias oder Darks – mit Erklärung, wann und wie viele.
 2. **Kamera vorbereiten.** Automatisch geprüft: Moduswahlrad (Bias: M, Darks: B oder M), ISO wie die letzten
-   Lights, Belichtungszeit wie die Lights, Temperatur der Lights. Zum Abhaken: Objektivdeckel drauf, Sucher
-   abgedeckt (Okularabdeckung am Gurt), **Rauschreduzierung bei Langzeitbelichtung aus** (sonst macht die 6D nach
-   jedem Bild selbst ein Dark), Bildqualität RAW.
+   Lights, Belichtungszeit wie die Lights, Temperatur der Lights. Darks unter 1 s sperrt der Assistent (auch der
+   Server und „Master erstellen“): Das wären nur Bias – typisch, wenn die Kamera nach den Bias noch auf 1/4000
+   steht. Gibt es noch keine Lights, erinnert er daran, die Zeit der Lights einzustellen. Zum Abhaken:
+   Objektivdeckel drauf, Sucher abgedeckt (Okularabdeckung am Gurt), **Rauschreduzierung bei Langzeitbelichtung
+   aus** (sonst macht die 6D nach jedem Bild selbst ein Dark), Bildqualität RAW.
 3. **Aufnehmen.** Anzahl (Bias 40, Darks 20) und bei Darks im Modus B die Zeit (vorbelegt mit der Zeit der
    Lights); Anzeige der Dauer und der Download-Zeit (~25 s je RAW über den Hotspot). Die Serie lädt nur RAWs.
 4. **Master erstellen** startet von selbst, sobald alle RAWs auf dem Mac sind, und trägt den Master in die

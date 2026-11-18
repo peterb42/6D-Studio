@@ -288,6 +288,10 @@ class TestStudioMitSimulator(unittest.TestCase):
             bias = self.wait_master()[0]
             self.assertEqual((bias["kind"], bias["iso"], bias["n"]), ("bias", 3200, 3))
             self.assertTrue(bias["name"].startswith("MASTER-BIAS_ISO3200_"))
+            # Kamera steht jetzt auf 1/4000 – Master-Darks damit wären nur Bias
+            with self.assertRaisesRegex(studio.CameraError, "Bias"):
+                st.act_series_start({"type": "dark", "target": "Stack", "count": 3, "master": True})
+            self.assertFalse(st.series["active"])
             # Master noch einmal aus dem Ordner der Darks (z. B. von der Karte kopiert)
             st.act_library_build({"session": os.path.basename(s["session"]), "kind": "dark"})
             dark = self.wait_master()[0]
