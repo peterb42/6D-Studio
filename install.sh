@@ -33,6 +33,11 @@ for t in gphoto2 ffplay; do
   command -v $t >/dev/null || echo "✘ $t fehlt – brew bundle (Brewfile im Projekt)"
 done
 [[ ":$PATH:" == *":$BIN:"* ]] || echo "✘ $BIN ist nicht im PATH (in ~/.zshrc ergänzen)"
+if [[ -x $ROOT/.venv/bin/python ]]; then
+  echo "✔︎ venv: $($ROOT/.venv/bin/python --version)"
+else
+  echo "ℹ︎ Keine venv – zum Entwickeln: /opt/homebrew/bin/python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt"
+fi
 grep -q '^ptp2_ip=guid=' "$HOME/.gphoto/settings" 2>/dev/null \
   && echo "✔︎ Kopplung (GUID) in ~/.gphoto/settings vorhanden" \
   || echo "ℹ︎ Noch keine Kopplung – siehe README, Abschnitt „Erstes Koppeln“"

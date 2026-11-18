@@ -14,6 +14,10 @@
 
 set -u
 SELF="${0:t}"
+ROOT="${0:A:h:h}"                       # Projektordner (Symlinks aufgelöst)
+# Python der Projekt-venv, sonst das System-Python (reicht – nur Standardbibliothek)
+PY="$ROOT/.venv/bin/python"
+[[ -x $PY ]] || PY=/usr/bin/python3
 OUT="${OUT:-$HOME/Pictures/6D-Tethering}"
 NAME="%Y%m%d-%H%M%S-%n.%C"
 GPDIR="$HOME/.gphoto"
@@ -53,7 +57,7 @@ proxy_ready() {  # läuft der Vermittler und ist die Kamera aktuell angemeldet?
 start_proxy() {
   [[ -n $(proxy_pid) ]] && return 0
   mkdir -p "$GPDIR"
-  nohup /usr/bin/python3 -I -u "$PROXY" "$CAM_IP" > "$PROXY_LOG" 2>&1 &
+  nohup "$PY" -I -u "$PROXY" "$CAM_IP" > "$PROXY_LOG" 2>&1 &
   disown
   sleep 1
 }
@@ -165,12 +169,11 @@ case "$cmd" in
     ;;
   sim)
     # Simulierte 6D + eigenes Studio (Port 8067) – läuft parallel zum echten Studio.
-    ROOT=${0:A:h:h}
     pkill -f "sim/sim6d.py" 2>/dev/null; pkill -f "6d-studio.py 127.0.0.1" 2>/dev/null; sleep 0.5
     mkdir -p "$GPDIR"
-    nohup /usr/bin/python3 -I -u "$ROOT/sim/sim6d.py" --port 15741 "$@" > "$GPDIR/6d-sim.log" 2>&1 &!
+    nohup "$PY" -I -u "$ROOT/sim/sim6d.py" --port 15741 "$@" > "$GPDIR/6d-sim.log" 2>&1 &!
     CAM_PORT=15741 GPHOTO_PORT=15742 STUDIO_PORT=8067 OUT="$HOME/Pictures/6D-Tethering/Simulator" \
-      nohup /usr/bin/python3 -I -u "$ROOT/studio/6d-studio.py" 127.0.0.1 > "$GPDIR/6d-sim-studio.log" 2>&1 &!
+      nohup "$PY" -I -u "$ROOT/studio/6d-studio.py" 127.0.0.1 > "$GPDIR/6d-sim-studio.log" 2>&1 &!
     for i in {1..30}; do curl -s -o /dev/null http://127.0.0.1:8067/api/state && break; sleep 0.2; done
     open http://127.0.0.1:8067
     echo "Simulator läuft – Studio: http://127.0.0.1:8067  (Protokolle: $GPDIR/6d-sim*.log, beenden: $SELF sim-stop)"

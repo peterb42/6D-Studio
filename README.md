@@ -38,9 +38,18 @@ Fotos landen in `~/Pictures/6D-Tethering`, das Protokoll in `~/.gphoto/6d-proxy.
 | `tests/` | Tests ohne Kamera, auch Studio ↔ Simulator (`python3 -m unittest discover -s tests -v`, ~7 s) |
 | `docs/canon-6d-ptpip.md` | **Alles, was wir über das Protokoll der 6D herausgefunden haben** |
 
-Nur Python-Standardbibliothek, läuft mit dem System-Python (`/usr/bin/python3`, 3.9+).
+Nur Python-Standardbibliothek, läuft mit Python 3.9+ – auch mit dem System-Python (`/usr/bin/python3`).
 
 ## Entwickeln
+
+Einmalig eine venv anlegen (nur Entwicklungswerkzeuge, z. B. ruff – zur Laufzeit wird nichts installiert):
+
+```bash
+/opt/homebrew/bin/python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+```
+
+`6d-fernsteuerung` und VS Code nehmen automatisch `.venv/bin/python`; ohne venv das System-Python.
+ruff prüft auf Python 3.9 (`pyproject.toml`), damit der Code mit beiden läuft.
 
 ```bash
 ./install.sh

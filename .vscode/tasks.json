@@ -59,14 +59,20 @@
     {
       "label": "Tests",
       "type": "shell",
-      "command": "/usr/bin/python3 -m unittest discover -s tests -v",
+      "command": "${command:python.interpreterPath} -m unittest discover -s tests -v",
       "group": { "kind": "test", "isDefault": true },
       "problemMatcher": []
     },
     {
       "label": "Lint (ruff)",
       "type": "shell",
-      "command": "ruff check studio tools tests",
+      "command": "${workspaceFolder}/.venv/bin/ruff check studio sim tools tests",
+      "problemMatcher": []
+    },
+    {
+      "label": "venv einrichten",
+      "type": "shell",
+      "command": "/opt/homebrew/bin/python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt",
       "problemMatcher": []
     },
     {
@@ -78,7 +84,7 @@
     {
       "label": "Kamera-Fähigkeiten auslesen",
       "type": "shell",
-      "command": "/usr/bin/python3 tools/ptp-caps.py",
+      "command": "${command:python.interpreterPath} tools/ptp-caps.py",
       "problemMatcher": []
     }
   ]

@@ -3,7 +3,6 @@
 import socket
 import struct
 import sys
-import time
 
 HOST = ("127.0.0.1", 15740)
 
@@ -39,7 +38,8 @@ def op(s, code, tid, *params, show=True):
             rc, rtid = struct.unpack("<HI", pl[:6])
             rparams = [struct.unpack("<I", pl[6 + 4 * i:10 + 4 * i])[0] for i in range((len(pl) - 6) // 4)]
             if show:
-                print(f"op 0x{code:04x} tid {tid} -> 0x{rc:04x} params {[hex(p) for p in rparams]} data {len(data)} B", flush=True)
+                print(f"op 0x{code:04x} tid {tid} -> 0x{rc:04x} params {[hex(p) for p in rparams]} "
+                      f"data {len(data)} B", flush=True)
             return rc, data
         print(f"  Paket Typ {ty} ({len(pl)} B) übersprungen", flush=True)
 
@@ -64,8 +64,9 @@ def main():
         tid += 1
         if code == 0x1002 and rc == 0x201E:
             print("   Session war noch offen – schließe und öffne neu", flush=True)
-            op(c, 0x1003, tid); tid += 1
-            op(c, 0x1002, 0, 1); tid = 1
+            op(c, 0x1003, tid)
+            op(c, 0x1002, 0, 1)
+            tid = 1
     if "--keep" not in sys.argv:
         op(c, 0x1003, tid)
 

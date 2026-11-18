@@ -705,8 +705,8 @@ class Studio:
                 if self.props[P_CAPTURE_DEST] == DEST_PC:
                     card = [v for v in self.avail.get(P_CAPTURE_DEST, []) if v != DEST_PC]
                     if card:
-                        self.internal_queue.append(
-                            Op(SET_PROP, data=struct.pack("<III", 12, P_CAPTURE_DEST, card[0]), name="Speicherort Karte"))
+                        data = struct.pack("<III", 12, P_CAPTURE_DEST, card[0])
+                        self.internal_queue.append(Op(SET_PROP, data=data, name="Speicherort Karte"))
                         self.log("Speicherort auf Speicherkarte gestellt.")
         for handle, transfer in new_objects:
             if transfer or self.autodownload:
