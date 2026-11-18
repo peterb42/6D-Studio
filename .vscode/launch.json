@@ -16,7 +16,7 @@
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/sim/sim6d.py",
-      "args": ["--port", "15741", "--verbose"],
+      "args": ["--port", "15741", "--verbose", "--raw", "--sky-speed", "60"],
       "console": "integratedTerminal",
       "justMyCode": true
     },

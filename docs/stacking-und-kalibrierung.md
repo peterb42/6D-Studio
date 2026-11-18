@@ -1,7 +1,8 @@
 # Serien für Stacking, Kalibrierbilder und Live-Stacking
 
-Stand 18.11.2026. Teil 1 beschreibt, was 6D Studio jetzt kann. Teil 2 ist der empfohlene Ablauf für eine Nacht.
-Teil 3 vergleicht, wie andere Programme live stacken, und Teil 4 schlägt vor, wie wir das einbauen.
+Stand 18.11.2026. Teil 1 beschreibt die Serien. Teil 2 ist der empfohlene Ablauf für eine Nacht. Teil 3
+vergleicht, wie andere Programme live stacken. Teil 4 beschreibt den Live-Stack von 6D Studio, Teil 5 die
+Dark-/Bias-Bibliothek mit geführter Aufnahme.
 
 ## 1. Serie für Stacking in 6D Studio
 
@@ -20,6 +21,8 @@ Karte **„Serie für Stacking“** in der Oberfläche (API: `POST /api/series/s
 - **Stopp** beim ersten Klick: nach dem laufenden Bild. Beim zweiten Klick: sofort (die laufende Bulb-Belichtung
   wird beendet und das Bild trotzdem gespeichert).
 - Während einer Serie sind der Bulb-Knopf und „Auslösen“ gesperrt.
+- **Auf den Mac:** alles, nur RAW, nur JPEG oder nichts. Bei RAW+JPEG an der Kamera spart „nur RAW“ für den
+  Live-Stack die Hälfte der Wartezeit, „nur JPEG“ ist am schnellsten (dann ohne Kalibrierung).
 - Downloads laufen jetzt **in Stücken** (`GetPartialObject`, 256 KB), und Bulb-Befehle haben **Vorrang**.
   Ein laufender Download verzögert das Ende einer Belichtung um höchstens ~0,25 s statt um bis zu 20 s.
   Kann die Kamera kein `GetPartialObject`, wird wie bisher am Stück geladen. **An der echten 6D noch prüfen.**
@@ -90,41 +93,116 @@ Gemeinsamer Ablauf: **Dark (und Bias) abziehen → durch Flat teilen → Sterne 
 Drehung) bestimmen → zum Stapel mitteln → Anzeige automatisch strecken (nur die Anzeige).** Live-Stacks
 sind ein Vorschau- und Beobachtungswerkzeug; für das Endbild stapelt man die RAWs später sorgfältig.
 
-## 4. Vorschlag: Live-Stacking in 6D Studio
+## 4. Live-Stack in 6D Studio
 
-**Bildquelle:** Die Kamera auf **RAW + kleines JPEG** (S2/S3) stellen. Das Studio lädt **nur das JPEG** für den
-Live-Stack (wenige hundert KB statt 25 MB, passt zu ~1 MB/s über den Hotspot). Die RAWs bleiben auf der Karte
-für die spätere Ausarbeitung; `serie.csv` verbindet beide über den Namen.
+Eigene Pipeline mit numpy und rawpy (`studio/livestack.py`), angelehnt an **OpenLiveStacker** (Ablauf,
+„Satelliten entfernen“, Streckung nur für die Anzeige) und **Siril** (Dark-Optimierung, kosmetische Korrektur,
+Ausrichtung mit Drehung). Siril selbst wird nicht gebraucht – aber alle Ergebnisse sind FITS, die Siril direkt liest.
 
-**Zwei Wege:**
+**Bedienung:** Karte „Live-Stack“ → Bias/Dark wählen (Vorgabe: automatisch aus der Bibliothek) → **Starten**.
+Danach wird jedes Light eingerechnet, das auf den Mac kommt (Serie oder einzelne Bulb-Aufnahme). Oben
+„Anzeige: Live-Stack“ (Taste <kbd>V</kbd>) zeigt das Ergebnis, darunter Helligkeit und Schwarzpunkt (nur Anzeige).
+**Beenden & speichern** schreibt `LIVESTACK_<Zeit>_<n>x<Zeit>_raw.fits` (linear, 32 Bit) und `.png` (gestreckt)
+nach `Astro/<Nacht>_<Objekt>/livestack/`. **Nachstacken** rechnet vorhandene Lights einer Sitzung ein –
+praktisch zum Ausprobieren ohne Kamera.
 
-1. **Siril als Rechenkern (empfohlen für den Anfang):** Das Studio startet `siril-cli` im Hintergrund mit
-   `start_ls -dark=<Master-Dark> [-rotate]` und übergibt jedes neue Light mit `livestack <datei>`.
-   Das Zwischenergebnis wird als JPEG gespeichert und in der Oberfläche angezeigt. Vorteile: RAW-Unterstützung,
-   Debayer, Kalibrierung und Registrierung sind fertig und gut getestet. Nachteil: Siril muss installiert sein
-   (`brew install --cask siril`).
-2. **Eigene, schlanke Pipeline mit numpy** (optional in der venv) auf den kleinen JPEGs:
-   Master-Dark aus den Dark-JPEGs mitteln und abziehen, helle Sterne finden, Verschiebung über die Sternpositionen
-   (später Drehung) bestimmen, laufend mitteln und mit einer automatischen Streckung (asinh) anzeigen.
-   Ohne externe Programme, aber mehr eigener Code.
+**Je Bild (RAW):**
 
-**Ablauf in der Oberfläche:** In der Serien-Karte „Live-Stack“ einschalten. Bei Lights wird jedes Bild nach dem
-Download sofort eingerechnet; daneben stehen Anzahl, verworfene Bilder (zu wenige Sterne) und die Gesamtzeit.
-Master-Darks und -Bias werden aus den Ordnern `darks/` und `biases/` der Sitzung oder aus einer
-**Dark-Bibliothek** (`Astro/_bibliothek/darks/ISO3200_30s/`) gebaut und nach ISO und Zeit ausgewählt, später auch
-nach EXIF-Temperatur.
+| Schritt | Wie | Vorbild |
+|---|---|---|
+| 1. Bias abziehen | Master-Bias gleicher ISO, sonst Schwarzwert der Kamera (2047) | Siril „=2048“ |
+| 2. Dark abziehen | Wärmesignal = Master-Dark − Bias, mal **k**. Dark-Optimierung: k ∈ [0, 2] per Goldener-Schnitt-Suche (Toleranz 0,001), kleinste Streuung im 512×512-Feld der Bildmitte, je Farbe des Bayer-Musters | Siril `-opt` |
+| 3. Hotpixel | aus dem Wärmesignal (Median + 5σ, höchstens 1 %), ersetzt durch die 4 gleichfarbigen Nachbarn; dazu ein Filter je Bild für Reste und kosmische Strahlung (Sterne bleiben, weil ihr Licht mehrere Pixel trifft) | Siril „cosmetic correction“ |
+| 4. Debayer | Superpixel (halbe Auflösung, 6D: 2748 × 1835) | Siril „Superpixel“ |
+| 5. Ausrichten | bis 60 Sterne (Blockhintergrund, 5σ, Schwerpunkt), Dreiecke aus je 5 Nachbarn, log. Seitenverhältnisse vergleichen, Ähnlichkeitstransformation (Verschiebung + Drehung), mit allen Paaren verfeinert | astroalign, Siril `-rotate` |
+| 6. Mitteln | bilinear auf das erste Bild verzerren, laufender Mittelwert mit Abdeckung je Pixel; optional hellsten Wert je Pixel verwerfen | OpenLiveStacker „Remove Satellites“ |
+| 7. Anzeige | Weißabgleich der Kamera, je Farbe Hintergrund neutral, Midtones Transfer Function (Schatten: Median − 2,8 · MAD, Hintergrund auf 25 %) | Siril/PixInsight Autostretch |
 
-**Reihenfolge für die Umsetzung:**
-1. Serien + Namenskonvention (✔︎ erledigt)
-2. Download nur der JPEGs bei RAW+JPEG (Schalter in der Serie)
-3. Live-Stack mit Siril (`siril-cli`) inklusive Anzeige
-4. Dark-Bibliothek und automatische Auswahl
-5. Bildfelddrehung bei langen Serien vom Stativ
+JPEGs gehen ab Schritt 4 ohne Kalibrierung (JPEGs sind nicht linear). Bilder mit weniger als 6 zugeordneten
+Sternen werden verworfen (Wolken, Verwackeln) und in der Liste mit Grund angezeigt.
+
+**Dark-Optimierung verstehen:** k ist der Faktor mit dem kleinsten Gesamtrauschen – nicht das reine
+Temperaturverhältnis. Sind die Darks gut (viele, lange Zeit), liegt k nahe am Verhältnis des Wärmesignals (z. B.
+0,5 bei 6 °C kälteren Lights). Bei wenigen, kurzen Darks bringt der Master eigenes Rauschen mit, dann ist k
+kleiner – das ist Absicht. k steht je Bild in der Liste.
+
+**Gemessen** (MacBook M1): ein 6D-RAW braucht ~1,3 s (Laden 0,3 s, Hotpixel 0,14 s, Sterne 0,09 s, Verzerren
+0,4 s, Anzeige 0,2 s) – wenig gegen ~25 s Download über den Hotspot. Der Kamera-Thread wird dabei höchstens 7 ms
+aufgehalten (Bulb-Stopp bleibt pünktlich). Ausrichtung im Test: 0,001° und 0,02 px Fehler.
+
+**Grenzen:** Mittelwert ohne Ausreißerverwerfung (außer „Satelliten“) – für das Endbild die RAWs in Siril
+stapeln. Keine Flats im Live-Stack (noch). Der Vordergrund verschmiert, weil auf die Sterne ausgerichtet wird.
+
+## 5. Dark- & Bias-Bibliothek
+
+```
+~/Pictures/6D-Tethering/Astro/Bibliothek/
+  bias/   MASTER-BIAS_ISO3200_21C_n40_20261118-1530.fits
+  darks/  MASTER-DARK_ISO3200_30s_14C_n20_20261118-2350.fits
+```
+
+Alle Angaben stehen im FITS-Kopf (`ISOSPEED`, `EXPTIME`, `CCD-TEMP`, `TEMPMIN/MAX`, `NCOMBINE`, `INSTRUME`,
+`DATE-OBS`, `BAYERPAT`, `MEDIAN`, `NOISE`, `HOTPIX`); 32-Bit-Gleitkomma 0…1 wie bei Siril. Die Karte zeigt die
+Masters als Tabelle; ✓ markiert, was zu den letzten Lights passt. Löschen per ✕.
+
+**Sensortemperatur:** aus dem Canon-MakerNote der CR2 (CameraInfo, Byte 0x1B − 128 = °C). Für die 6D an einer
+echten CR2 geprüft – ISO, Blende und Zeit an den Nachbarpositionen stimmen mit den EXIF-Werten überein.
+
+**Automatische Auswahl** beim ersten RAW eines Live-Stacks (gleiche Kamera und Bildgröße):
+- **Bias:** gleiche ISO, das neueste.
+- **Dark:** gleiche ISO; zuerst gleiche Zeit (±5 %), dann die nächste Temperatur, dann das neueste. Mit
+  Dark-Optimierung auch Darks mit 0,5- bis 4-facher Zeit (k gleicht aus), gleiche Zeit bleibt bevorzugt.
+
+**Master erstellen** (`calib.build_master`): zwei Durchgänge über die RAWs, ohne alle 20-MP-Bilder gleichzeitig
+im Speicher. Durchgang 1: robuste Mitte und Streuung je Pixel ohne Minimum und Maximum (bei 3–4 Bildern = Median;
+die Streuung wird für das Weglassen korrigiert und ist nie kleiner als das Rauschen eines Einzelbilds).
+Durchgang 2: Mittelwert aller Werte innerhalb 3σ. Ein Treffer kosmischer Strahlung fällt so auch bei nur 4 Bildern
+heraus; ohne Ausreißer ist das Ergebnis gleich dem einfachen Mittel (Abweichung 0,17 ADU bei 10 Bildern).
+
+**Geführte Aufnahme** („Geführt aufnehmen …“):
+
+1. **Was?** Bias oder Darks – mit Erklärung, wann und wie viele.
+2. **Kamera vorbereiten.** Automatisch geprüft: Moduswahlrad (Bias: M, Darks: B oder M), ISO wie die letzten
+   Lights, Belichtungszeit wie die Lights, Temperatur der Lights. Zum Abhaken: Objektivdeckel drauf, Sucher
+   abgedeckt (Okularabdeckung am Gurt), **Rauschreduzierung bei Langzeitbelichtung aus** (sonst macht die 6D nach
+   jedem Bild selbst ein Dark), Bildqualität RAW.
+3. **Aufnehmen.** Anzahl (Bias 40, Darks 20) und bei Darks im Modus B die Zeit (vorbelegt mit der Zeit der
+   Lights); Anzeige der Dauer und der Download-Zeit (~25 s je RAW über den Hotspot). Die Serie lädt nur RAWs.
+4. **Master erstellen** startet von selbst, sobald alle RAWs auf dem Mac sind, und trägt den Master in die
+   Bibliothek ein. Der nächste Live-Stack nimmt ihn automatisch.
+
+**Aus Ordner:** Liegen Darks/Bias schon in einem Sitzungsordner (z. B. von der Karte kopiert), baut „Master
+erstellen“ daraus Masters – gruppiert nach ISO und Zeit, je Gruppe ab 3 Bildern.
+
+**Empfehlung:** Bias je benutzter ISO einmal zu Hause (40–50), hält lange. Darks am Ende jeder Nacht (15–30) mit
+der Zeit der Lights; über die Zeit wächst so eine Bibliothek über viele Temperaturen, aus der die Auswahl für
+spätere Nächte das passende Dark nimmt – die Dark-Optimierung gleicht den Rest aus.
+
+## 6. Ohne Kamera ausprobieren
+
+```bash
+6d-fernsteuerung sim --raw --sky-speed 60 --focus 0   # RAWs mit Sensordaten, Himmel dreht 60× schneller
+6d-fernsteuerung sim-cmd cap on                       # Deckel drauf → Darks/Bias
+6d-fernsteuerung sim-cmd temp 20                      # wärmer → mehr Wärmesignal
+```
+
+Der Simulator erzeugt RAWs (DNG-Inhalt mit Endung .CR2, 1368 × 912) mit Offset und Spaltenmuster,
+Ausleserauschen, Hotpixeln (Wärmesignal verdoppelt sich alle 6 °C, wächst mit ISO und Zeit; die Kamera erwärmt
+sich beim Belichten), Lichtverschmutzung und Sternen, die sich um den Himmelspol drehen. Die Tests
+(`tests/test_livestack.py`, `tests/test_simulator.py`) prüfen damit u. a.: k = 0,5 bei 6 °C kälteren Lights,
+Drehung 3,76° nach 15 min, Master mit kosmischem Treffer, geführte Darks → Master → automatische Auswahl im
+Live-Stack.
+
+**Noch offen:** Flats/Dark-Flats im Live-Stack und als Masters; Abgleich der Anzeige zwischen RAW und JPEG; an der
+echten 6D: Download-Zeit der RAWs im Live-Betrieb und die Temperaturwerte über eine Nacht.
 
 ## Quellen
 
 - Siril: [Live stacking](https://siril.readthedocs.io/en/latest/Livestack.html),
+  [Kalibrierung und Dark-Optimierung](https://siril.readthedocs.io/en/latest/preprocessing/calibration.html),
+  [Quelltext der Dark-Optimierung](https://gitlab.com/free-astro/siril/-/blob/master/src/core/preprocess.c),
   [Skripte und Ordnerstruktur](https://siril.org/tutorials/first-steps/), [FAQ zu DSLR-Darks](https://siril.org/faq/)
+- Beispiel-RAW der 6D zum Prüfen von rawpy und Temperatur: [raw.pixls.us](https://raw.pixls.us/data/Canon/EOS%206D/)
 - SharpCap: [Live Stacking](https://docs.sharpcap.co.uk/2.9/13_LiveStacking.htm),
   [Forum: Kalibrierung live](https://forums.sharpcap.co.uk/viewtopic.php?p=26404)
 - ASIAIR: [Review Live Stacking](https://www.zwoastro.com/2020/04/21/review-live-stacking-with-the-asiair-pro-by-david-parks/),

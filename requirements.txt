@@ -1,0 +1,4 @@
+# Laufzeit – nur für Live-Stack und Dark-/Bias-Bibliothek. Alles andere läuft mit der Standardbibliothek,
+# auch mit dem System-Python ohne venv. Einrichten:  .venv/bin/pip install -r requirements.txt
+numpy>=1.24
+rawpy>=0.18        # LibRaw: liest die CR2 der 6D (und DNG des Simulators)

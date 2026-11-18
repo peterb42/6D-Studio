@@ -35,8 +35,12 @@ done
 [[ ":$PATH:" == *":$BIN:"* ]] || echo "✘ $BIN ist nicht im PATH (in ~/.zshrc ergänzen)"
 if [[ -x $ROOT/.venv/bin/python ]]; then
   echo "✔︎ venv: $($ROOT/.venv/bin/python --version)"
+  "$ROOT/.venv/bin/python" -c "import numpy, rawpy" 2>/dev/null \
+    && echo "✔︎ numpy + rawpy da – Live-Stack und Dark-/Bias-Bibliothek verfügbar" \
+    || echo "ℹ︎ Für Live-Stack und Bibliothek: .venv/bin/pip install -r requirements.txt"
 else
-  echo "ℹ︎ Keine venv – zum Entwickeln: /opt/homebrew/bin/python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt"
+  echo "ℹ︎ Keine venv – für Live-Stack und zum Entwickeln:"
+  echo "  /opt/homebrew/bin/python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt"
 fi
 grep -q '^ptp2_ip=guid=' "$HOME/.gphoto/settings" 2>/dev/null \
   && echo "✔︎ Kopplung (GUID) in ~/.gphoto/settings vorhanden" \

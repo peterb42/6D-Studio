@@ -4,7 +4,9 @@
 Ein Prozess hält die PTP/IP-Verbindung zur Kamera und bietet:
   * Bedienoberfläche   http://127.0.0.1:8066
       Livebild mit 5×/10×-Lupe der Kamera, Fokusantrieb, Schärfe-Anzeige für Sterne,
-      Bulb Start/Stopp mit Timer, ISO/Blende/Zeit, automatischer Download.
+      Bulb Start/Stopp mit Timer, ISO/Blende/Zeit, automatischer Download,
+      Serien für Stacking, Live-Stack und Dark-/Bias-Bibliothek (die letzten beiden brauchen numpy und
+      rawpy aus der venv – siehe requirements.txt).
   * Zugang für gphoto2 über ptpip:127.0.0.1 (wird vom Skript 6d-fernsteuerung genutzt).
 
 Eigenheiten der 6D, die hier abgefangen werden:
@@ -57,6 +59,12 @@ ASTRO_DIR = os.path.join(OUT, "Astro")              # Serien für Stacking (sieh
 
 sys.path.insert(0, HERE)                            # -I lässt den Skriptordner sonst weg
 import astro  # noqa: E402
+import calib  # noqa: E402
+import imaging  # noqa: E402
+import livestack  # noqa: E402
+
+LIBRARY_DIR = os.path.join(ASTRO_DIR, calib.LIBRARY_FOLDER)
+DOWNLOAD_MODES = ("all", "raw", "jpeg", "none")    # was eine Serie auf den Mac lädt
 
 # ---------------------------------------------------------------- Protokoll-Konstanten
 INIT_CMD_REQ, INIT_CMD_ACK, INIT_EVT_REQ, INIT_EVT_ACK, INIT_FAIL = 1, 2, 3, 4, 5
@@ -323,6 +331,11 @@ class Studio:
         # Serie für Stacking
         self.series = None                  # Zustand der laufenden/letzten Serie
         self.pending_frame = None           # Bild der Serie, dem neue Kameradateien zugeordnet werden
+        # Live-Stack und Kalibrier-Bibliothek
+        self.library = calib.Library(LIBRARY_DIR)
+        self.live = None                    # livestack.LiveStack
+        self.master_job = None              # Master-Erstellung (läuft im Hintergrund)
+        self.last_light = None              # ISO, Zeit, Temperatur der letzten Lights (für passende Darks)
         # Verbindung
         self.cam_cmd = self.cam_evt = None
         self.cli_cmd = self.cli_evt = None
@@ -944,6 +957,20 @@ class Studio:
             raise CameraError("%s: Moduswahlrad auf %s stellen" % (label, "Av" if ftype == "flat" else "M"))
         if bulb and exposure <= 0:
             raise CameraError("Belichtungszeit für Bulb angeben")
+        download = body.get("download", "all" if ftype == "light" else "none")
+        download = {True: "all", False: "none", None: "none"}.get(download, download)
+        if download not in DOWNLOAD_MODES:
+            raise CameraError("Unbekannte Download-Einstellung")
+        master = bool(body.get("master")) and ftype in calib.KINDS     # danach Master für die Bibliothek
+        if master:
+            problem = imaging.missing()
+            if problem:
+                raise CameraError("Master erstellen geht nicht: " + problem)
+            if count < calib.MIN_FRAMES:
+                raise CameraError("Für einen Master mindestens %d Bilder" % calib.MIN_FRAMES)
+            if self.master_job and self.master_job["active"]:
+                raise CameraError("Es wird gerade ein Master erstellt – bitte warten")
+            download = "raw"
         if ftype == "bias":                                          # kürzeste Zeit einstellen
             fastest = max(self.avail.get(P_SHUTTER) or [0])
             if fastest and self.props.get(P_SHUTTER) != fastest:
@@ -960,15 +987,14 @@ class Studio:
         with self.lock:
             self.series = {
                 "active": True, "type": ftype, "label": label, "target": target, "count": count,
-                "exposure": exposure, "pause": pause, "bulb": bulb,
-                "download": bool(body.get("download", ftype == "light")),
+                "exposure": exposure, "pause": pause, "bulb": bulb, "download": download, "master": master,
                 "session": session, "folder": folder, "first": astro.next_index(folder, ftype),
                 "done": 0, "index": 0, "phase": "startet", "phase_end": None, "started": now,
-                "stop": 0, "error": None, "last": None,
+                "stop": 0, "error": None, "last": None, "files": [],
             }
-        self.log("▶︎ Serie: %d × %s (%s) → %s" % (
+        self.log("▶︎ Serie: %d × %s (%s) → %s%s" % (
             count, label, fmt_duration(exposure) if bulb else "Kamerazeit " + fmt_shutter(self.props.get(P_SHUTTER)),
-            folder.replace(os.path.expanduser("~"), "~")))
+            folder.replace(os.path.expanduser("~"), "~"), " – danach Master für die Bibliothek" if master else ""))
         threading.Thread(target=self.series_thread, daemon=True).start()
 
     def act_series_stop(self, body):
@@ -1003,6 +1029,11 @@ class Studio:
                 self.pending_frame = None
                 s["active"], s["phase"], s["phase_end"] = False, "fertig", None
             self.log("■ Serie %s: %d von %d Bildern" % (s["label"], s["done"], s["count"]))
+            if s["master"]:
+                if s["done"] >= calib.MIN_FRAMES:
+                    threading.Thread(target=self.master_from_series, args=(s,), daemon=True).start()
+                else:
+                    self.log("Kein Master: nur %d Bilder (mindestens %d)" % (s["done"], calib.MIN_FRAMES))
 
     def series_frame(self, s, index):
         start = time.time()
@@ -1017,7 +1048,7 @@ class Studio:
             "download": s["download"], "start": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start)),
             "planned": planned, "exposure": None, "iso": fmt_iso(p.get(P_ISO)),
             "aperture": fmt_aperture(p.get(P_APERTURE)), "shutter": fmt_shutter(shutter),
-            "mode": AE_MODES.get(p.get(P_AEMODE), "?"), "handles": [],
+            "mode": AE_MODES.get(p.get(P_AEMODE), "?"), "handles": [], "files": s["files"],
         }
         with self.lock:
             self.pending_frame = frame
@@ -1048,6 +1079,129 @@ class Studio:
         self.autodownload = bool(body.get("on"))
         self.log("Automatischer Download %s" % ("an" if self.autodownload else "aus"))
 
+    # ---------- Live-Stack (livestack.py)
+    def live_running(self):
+        return bool(self.live and self.live.active)
+
+    def _live_or_error(self):
+        if not self.live:
+            raise CameraError("Kein Live-Stack – zuerst starten")
+        return self.live
+
+    def act_live_start(self, body, session=None):
+        problem = imaging.missing()
+        if problem:
+            raise CameraError("Live-Stack geht nicht: " + problem)
+        if self.live_running():
+            raise CameraError("Der Live-Stack läuft schon")
+        session = session or astro.session_dir(ASTRO_DIR, body.get("target"), time.time())
+        opts = {k: body.get(k) for k in livestack.LiveStack.OPTIONS}
+        self.live = livestack.LiveStack(self.library, os.path.join(session, "livestack"), opts, self.log)
+        self.log("▶︎ Live-Stack an – jedes neue Light wird eingerechnet (Kalibrierung: Bias %s, Dark %s)" % (
+            opts.get("bias") or "auto", opts.get("dark") or "auto"))
+
+    def act_live_stop(self, body):
+        self._live_or_error().finish()
+        self.log("■ Live-Stack: keine neuen Bilder mehr – wird gespeichert")
+
+    def act_live_reset(self, body):
+        self._live_or_error().reset()
+
+    def act_live_view(self, body):
+        self._live_or_error().set_view(body.get("stretch"), body.get("black"))
+
+    def act_live_save(self, body):
+        try:
+            self._live_or_error().save()
+        except RuntimeError as e:
+            raise CameraError(str(e)) from None
+
+    def act_live_folder(self, body):
+        """Vorhandene Lights einer Sitzung (nach)stacken – zum Ausprobieren auch ohne Kamera."""
+        session = body.get("session") or ""
+        try:
+            files = calib.source_files(ASTRO_DIR, session, "lights")
+        except ValueError as e:
+            raise CameraError(str(e)) from None
+        raws = [f for f in files if imaging.kind_of(f) == "raw"]
+        files = raws or [f for f in files if imaging.kind_of(f) == "jpeg"]
+        if not files:
+            raise CameraError("Keine Lights in %s" % session)
+        if not self.live_running():
+            self.act_live_start(body, session=os.path.join(ASTRO_DIR, session))
+        for f in files:
+            self.live.add(f)
+        self.log("Live-Stack: %d Lights aus %s eingereiht" % (len(files), session))
+
+    # ---------- Kalibrier-Bibliothek (calib.py)
+    def act_library_delete(self, body):
+        try:
+            entry = self.library.get(body.get("id"))
+            if not entry:
+                raise ValueError("Master nicht gefunden")
+            self.library.delete(entry["id"])
+        except (ValueError, OSError) as e:
+            raise CameraError(str(e)) from None
+        self.log("Master gelöscht: %s" % entry["name"])
+
+    def act_library_build(self, body):
+        kind = body.get("kind")
+        if kind not in calib.KINDS:
+            raise CameraError("Unbekannter Master-Typ")
+        problem = imaging.missing()
+        if problem:
+            raise CameraError("Master erstellen geht nicht: " + problem)
+        if self.master_job and self.master_job["active"]:
+            raise CameraError("Es wird gerade ein Master erstellt – bitte warten")
+        try:
+            files = calib.source_files(ASTRO_DIR, body.get("session") or "", calib.KINDS[kind]["source"])
+        except ValueError as e:
+            raise CameraError(str(e)) from None
+        job = self._new_master_job(kind, body.get("session"))
+        threading.Thread(target=self._build_masters, args=(job, files), daemon=True).start()
+
+    def _new_master_job(self, kind, source):
+        job = {"active": True, "kind": kind, "label": calib.KINDS[kind]["label"], "source": source,
+               "phase": "startet", "done": 0, "total": 0, "error": None, "results": [], "started": time.time()}
+        with self.lock:
+            self.master_job = job
+        return job
+
+    def master_from_series(self, s):
+        """Nach einer Dark-/Bias-Serie: warten, bis die RAWs geladen sind, dann den Master bauen."""
+        job = self._new_master_job(s["type"], os.path.basename(s["session"]))
+        job["phase"], job["total"] = "wartet auf Downloads", s["done"]
+        idle_since, deadline = None, time.time() + 3 * 3600
+        while len(s["files"]) < s["done"] and time.time() < deadline:
+            job["done"] = len(s["files"])
+            busy = not self.downloads.empty() or self.downloading
+            idle_since = None if busy else (idle_since or time.time())
+            if idle_since and time.time() - idle_since > 20:
+                break                                    # nichts mehr unterwegs (z. B. Kamera nur auf JPEG)
+            time.sleep(0.5)
+        exposure = s["exposure"] if s["bulb"] else None
+        self._build_masters(job, list(s["files"]), exposure=exposure, by_exposure=False)
+
+    def _build_masters(self, job, files, exposure=None, by_exposure=True):
+        try:
+            groups = [g for g in calib.group_frames(files, by_exposure) if len(g[2]) >= calib.MIN_FRAMES]
+            if not groups:
+                raise ValueError("Zu wenige RAW-Dateien (mindestens %d mit gleicher ISO%s) – Kamera auf RAW stellen?"
+                                 % (calib.MIN_FRAMES, " und Zeit" if by_exposure else ""))
+            for iso, _, frames in groups:
+                job["group"] = "ISO %s, %d Bilder" % (iso, len(frames))
+
+                def progress(phase, done, total):
+                    job.update(phase=phase, done=done, total=total)
+                entry = calib.build_master(self.library, job["kind"], frames, progress, self.log, exposure)
+                job["results"].append(entry)
+            job["phase"] = "fertig"
+        except Exception as e:
+            job["error"], job["phase"] = str(e), "Fehler"
+            self.log("❌ Master-%s: %s" % (job["label"], e))
+        finally:
+            job["active"] = False
+
     # ---------- Download
     def download_worker(self):
         while True:
@@ -1073,7 +1227,8 @@ class Studio:
 
         if frame:                                    # Serienbild: Namenskonvention + Eintrag in serie.csv
             path = os.path.join(frame["folder"], frame["base"] + ext)
-            load = frame["download"] or transfer     # „nur Computer“: muss geladen werden, sonst weg
+            mode = frame["download"]                 # all | raw | jpeg | none
+            load = transfer or mode == "all" or mode == imaging.kind_of(name)   # „nur Computer“: muss geladen werden
             row = {"typ": astro.FRAME_TYPES[frame["type"]]["label"], "nr": frame["index"],
                    "datei": os.path.basename(path), "kameradatei": name,
                    "ordner": astro.FRAME_TYPES[frame["type"]]["folder"], "start": frame["start"],
@@ -1101,6 +1256,7 @@ class Studio:
             astro.log_file(frame["session"], row)
         dt = max(time.time() - t0, 0.1)
         self.log("✔︎ Gespeichert: %s (%.1f MB/s)" % (os.path.basename(path), len(data) / 1e6 / dt))
+        self.after_download(path, frame)
         preview = os.path.join(PREVIEW_DIR, os.path.basename(path) + ".jpg")
         subprocess.run(["sips", "-s", "format", "jpeg", "-Z", "1800", path, "--out", preview],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1108,6 +1264,24 @@ class Studio:
             self.photos.appendleft({"name": os.path.basename(path), "time": time.strftime("%H:%M:%S"),
                                     "size": len(data),
                                     "preview": os.path.basename(preview) if os.path.exists(preview) else None})
+
+    def after_download(self, path, frame):
+        """Neue Datei auf dem Mac: RAWs der Serie merken (Master), Light-Werte merken, Live-Stack füttern."""
+        kind = imaging.kind_of(path)
+        if frame and kind == "raw":
+            frame["files"].append(path)
+        if (frame and frame["type"] != "light") or kind not in ("raw", "jpeg"):
+            return
+        meta = imaging.read_meta(path)
+        iso = meta["iso"] or (int(frame["iso"]) if frame and frame["iso"].isdigit() else None)
+        exposure = (frame and (frame["exposure"] or frame["planned"])) or meta["exposure"]
+        with self.lock:
+            last = self.last_light or {}
+            self.last_light = {"iso": iso, "exposure": exposure, "time": time.time(),
+                               "temp": meta["temp"] if meta["temp"] is not None else last.get("temp")}
+        live = self.live
+        if live and live.active:
+            live.add(path, {"exposure": frame["exposure"] if frame else None})
 
     def fetch_object(self, handle, size, name):
         """Bild laden – in Stücken (GetPartialObject), damit Bulb-Befehle dazwischen drankommen.
@@ -1147,8 +1321,9 @@ class Studio:
                 dl = dict(self.downloading, got=max(got, self.downloading.get("got", 0)))
             series = None
             if self.series:
-                series = {k: v for k, v in self.series.items() if k not in ("session",)}
+                series = {k: v for k, v in self.series.items() if k not in ("session", "files")}
                 series["folder"] = self.series["folder"].replace(os.path.expanduser("~"), "~")
+                series["loaded"] = len(self.series["files"])
             fps = 0.0
             if len(self.fps_times) >= 2 and time.time() - self.fps_times[-1] < 2:
                 fps = (len(self.fps_times) - 1) / max(self.fps_times[-1] - self.fps_times[0], 0.001)
@@ -1164,8 +1339,16 @@ class Studio:
                 "bulb": dict(self.bulb, active=True, now=time.time()) if self.bulb else {"active": False},
                 "autodownload": self.autodownload, "downloading": dl, "photos": list(self.photos),
                 "series": series, "now": time.time(),
+                "live": self.live.status() if self.live else None,
+                "imaging": imaging.missing(), "library_seq": self.library.seq,
+                "master_job": dict(self.master_job) if self.master_job else None,
+                "last_light": self.last_light,
                 "out": OUT, "log": list(self.logs)[-40:],
             }
+
+    def library_info(self):
+        return {"masters": self.library.list(), "sources": calib.sources(ASTRO_DIR),
+                "folder": LIBRARY_DIR.replace(os.path.expanduser("~"), "~"), "missing": imaging.missing()}
 
 
 # ---------------------------------------------------------------- Webserver
@@ -1175,7 +1358,11 @@ class Handler(BaseHTTPRequestHandler):
                "/api/zoommove": "act_zoommove", "/api/focus": "act_focus", "/api/bulb/start": "act_bulb_start",
                "/api/bulb/stop": "act_bulb_stop", "/api/shoot": "act_shoot",
                "/api/autodownload": "act_autodownload",
-               "/api/series/start": "act_series_start", "/api/series/stop": "act_series_stop"}
+               "/api/series/start": "act_series_start", "/api/series/stop": "act_series_stop",
+               "/api/live/start": "act_live_start", "/api/live/stop": "act_live_stop",
+               "/api/live/reset": "act_live_reset", "/api/live/view": "act_live_view",
+               "/api/live/save": "act_live_save", "/api/live/folder": "act_live_folder",
+               "/api/library/delete": "act_library_delete", "/api/library/build": "act_library_build"}
 
     def log_message(self, *a):
         pass
@@ -1201,6 +1388,25 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_bytes(f.read(), "text/html; charset=utf-8")
         elif u.path == "/api/state":
             self.send_json(st.snapshot())
+        elif u.path == "/api/library":
+            self.send_json(st.library_info())
+        elif u.path == "/api/live.png":
+            live, png, seq = st.live, None, 0
+            if live:
+                with live.lock:
+                    png, seq = live.png, live.seq
+            if png:
+                self.send_bytes(png, "image/png", extra={"X-Stack-Seq": str(seq)})
+            else:
+                self.send_response(204)
+                self.end_headers()
+        elif u.path == "/api/live/saved.png":
+            path = st.live.saved[-1] if st.live and st.live.saved else None
+            if path and os.path.isfile(path):
+                with open(path, "rb") as f:
+                    self.send_bytes(f.read(), "image/png")
+            else:
+                self.send_json({"error": "noch nichts gespeichert"}, 404)
         elif u.path == "/api/frame.jpg":
             after = int(parse_qs(u.query).get("after", ["0"])[0])
             with st.frame_cond:

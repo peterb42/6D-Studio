@@ -15,7 +15,7 @@
 set -u
 SELF="${0:t}"
 ROOT="${0:A:h:h}"                       # Projektordner (Symlinks aufgelöst)
-# Python der Projekt-venv, sonst das System-Python (reicht – nur Standardbibliothek)
+# Python der Projekt-venv (mit numpy/rawpy für den Live-Stack), sonst das System-Python (Rest läuft auch so)
 PY="$ROOT/.venv/bin/python"
 [[ -x $PY ]] || PY=/usr/bin/python3
 OUT="${OUT:-$HOME/Pictures/6D-Tethering}"
@@ -136,6 +136,8 @@ Aufruf: $SELF <befehl> [argumente]      Verbindung: $MODE${CAM_IP:+ ($CAM_IP)}
   wlan [ip]          WLAN-Modus einrichten (Kamera suchen, Vermittler starten)
   stop               6D Studio / Vermittler beenden
   sim [optionen]     Simulierte 6D + Studio auf http://127.0.0.1:8067 (zum Entwickeln ohne Kamera)
+                     z. B. sim --raw --sky-speed 60  (RAW+JPEG, Himmel dreht sich 60× schneller)
+  sim-cmd <befehl>   Befehl an den Simulator, z. B. sim-cmd cap on | temp 20 | mode M | status
   sim-stop           Simulator beenden
   usb                Zurück auf USB-Kabel (beendet den Vermittler)
   status             Zustand der WLAN-Verbindung anzeigen
@@ -171,12 +173,20 @@ case "$cmd" in
     # Simulierte 6D + eigenes Studio (Port 8067) – läuft parallel zum echten Studio.
     pkill -f "sim/sim6d.py" 2>/dev/null; pkill -f "6d-studio.py 127.0.0.1" 2>/dev/null; sleep 0.5
     mkdir -p "$GPDIR"
-    nohup "$PY" -I -u "$ROOT/sim/sim6d.py" --port 15741 "$@" > "$GPDIR/6d-sim.log" 2>&1 &!
+    rm -f "$GPDIR/6d-sim-cmd"
+    nohup "$PY" -I -u "$ROOT/sim/sim6d.py" --port 15741 --control "$GPDIR/6d-sim-cmd" "$@" \
+      > "$GPDIR/6d-sim.log" 2>&1 &!
     CAM_PORT=15741 GPHOTO_PORT=15742 STUDIO_PORT=8067 OUT="$HOME/Pictures/6D-Tethering/Simulator" \
       nohup "$PY" -I -u "$ROOT/studio/6d-studio.py" 127.0.0.1 > "$GPDIR/6d-sim-studio.log" 2>&1 &!
     for i in {1..30}; do curl -s -o /dev/null http://127.0.0.1:8067/api/state && break; sleep 0.2; done
     open http://127.0.0.1:8067
     echo "Simulator läuft – Studio: http://127.0.0.1:8067  (Protokolle: $GPDIR/6d-sim*.log, beenden: $SELF sim-stop)"
+    ;;
+  sim-cmd)
+    (( $# )) || { echo "Befehl fehlt, z. B.: $SELF sim-cmd cap on"; exit 1; }
+    pgrep -f "sim/sim6d.py" >/dev/null || { echo "Simulator läuft nicht – zuerst: $SELF sim"; exit 1; }
+    echo "$*" >> "$GPDIR/6d-sim-cmd"
+    sleep 0.8; tail -n 2 "$GPDIR/6d-sim.log"
     ;;
   sim-stop)
     pkill -f "sim/sim6d.py" && echo "Simulator beendet."

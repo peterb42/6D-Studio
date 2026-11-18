@@ -13,11 +13,18 @@ die Eigenheiten der echten 6D (siehe docs/canon-6d-ptpip.md):
 Livebild: künstlicher Sternenhimmel, der auf die Lupe (Zoom/ZoomPosition) und den Fokusantrieb (DriveLens)
 reagiert. Aufnahmen landen als JPEG „auf der Karte“ und werden mit ObjectAddedEx (0xC181) gemeldet.
 
+Mit --raw zusätzlich ein RAW je Aufnahme – echte Sensordaten für Live-Stack und Kalibrier-Bibliothek: Offset mit
+Spaltenmuster, Ausleserauschen, Wärmesignal mit Hotpixeln (abhängig von Zeit, ISO und Temperatur, die Kamera
+erwärmt sich beim Belichten), Himmel mit Lichtverschmutzung und Sternen, die sich um den Himmelspol drehen
+(--sky-speed). Objektivdeckel (--cap, Konsole „cap on“) für Darks und Bias. Format: DNG (TIFF wie CR2) mit
+der Endung .CR2, 1368 × 912 Pixel – eine echte CR2 (verlustfreies JPEG) wäre in reinem Python zu langsam.
+
 Aufruf:   sim/sim6d.py [--port 15741] [--mode B|M] [--init-delay 4] …
 Studio dagegen starten:  CAM_PORT=15741 STUDIO_PORT=8067 GPHOTO_PORT=15742 studio/6d-studio.py 127.0.0.1
 (oder einfach: 6d-fernsteuerung sim).  Tastatur-Steuerung im Terminal: help
 """
 import argparse
+import array
 import math
 import os
 import random
@@ -50,6 +57,10 @@ CAM_GUID = bytes.fromhex("00000000000000000100" + "2c9efcca9f95")
 SENSOR_W, SENSOR_H = 5472, 3648
 LV_W, LV_H = 960, 640
 PHOTO_W, PHOTO_H = 1824, 1216
+RAW_W, RAW_H = 1368, 912                     # simulierter RAW-Sensor (¼ der 6D je Achse)
+RAW_BLACK, RAW_WHITE = 2047, 15490           # wie die echte 6D
+SIDEREAL = 2 * math.pi / 86164.1             # Erddrehung in rad/s
+POLE = (SENSOR_W * 0.55, -SENSOR_H * 1.3)    # Himmelspol oberhalb des Bildfelds (Sensorpixel)
 
 
 def third_steps(first, last):
@@ -138,6 +149,133 @@ def to_jpeg(w, h, buf, quality=80):
             return f.read()
 
 
+def sky_stars(stars, seconds):
+    """Sterne nach `seconds` Erddrehung: Drehung um den Himmelspol (Stativ ohne Nachführung)."""
+    a = SIDEREAL * seconds
+    ca, sa = math.cos(a), math.sin(a)
+    px, py = POLE
+    return [(px + (x - px) * ca - (y - py) * sa, py + (x - px) * sa + (y - py) * ca, m) for x, y, m in stars]
+
+
+# ---------------------------------------------------------------- RAW (Sensordaten)
+class Sensor:
+    """Simulierter Bildsensor: Offset mit festem Spaltenmuster, Ausleserauschen und Wärmesignal mit Hotpixeln.
+    Wärmesignal in ADU/s bei 20 °C und ISO 1600; verdoppelt sich alle 6 °C, wächst mit der ISO."""
+
+    def __init__(self, seed=11):
+        rnd = random.Random(seed)
+        n = RAW_W * RAW_H
+        self.col = [rnd.gauss(0, 2.0) for _ in range(RAW_W)]
+        self.hot = [(rnd.randrange(n), rnd.expovariate(1 / 2.5)) for _ in range(n // 400)]
+        self.hot += [(rnd.randrange(n), rnd.uniform(40, 250)) for _ in range(80)]
+        self.noise = [rnd.gauss(0, 1) for _ in range(1 << 18)]
+        self.rnd = random.Random()
+
+    def frame(self, seconds, iso, temp, sky=None, stars=(), sigma=1.5, gain=1.0):
+        """→ array('H') mit RAW_W × RAW_H Werten (RGGB). sky: ADU/s je Farbe (R, G, B) oder None (Deckel)."""
+        g = iso / 1600
+        read = 2.5 + 3.5 * g
+        heat = seconds * g * 2 ** ((temp - 20) / 6)
+        out = array.array("H")
+        sky = sky or (0, 0, 0)
+        for y in range(RAW_H):
+            grad = 1 + 0.5 * y / RAW_H                                  # Lichtverschmutzung unten
+            pair = (sky[0], sky[1]) if y % 2 == 0 else (sky[1], sky[2])
+            lv = [min(RAW_WHITE - 1500, s * seconds * g * grad * gain + 0.03 * heat) for s in pair]
+            sd = [math.sqrt(read * read + v) for v in lv]
+            o = self.rnd.randrange(len(self.noise) - RAW_W)
+            ns = self.noise[o:o + RAW_W]
+            row = [0] * RAW_W
+            row[0::2] = [int(RAW_BLACK + c + lv[0] + n * sd[0]) for n, c in zip(ns[0::2], self.col[0::2])]
+            row[1::2] = [int(RAW_BLACK + c + lv[1] + n * sd[1]) for n, c in zip(ns[1::2], self.col[1::2])]
+            out.extend(row)
+        for i, rate in self.hot:
+            out[i] = min(RAW_WHITE, out[i] + int(rate * heat))
+        r = int(3 * sigma) + 1
+        amp0 = 2500 * seconds / 30 * g * gain
+        for k, (sx, sy, mag) in enumerate(stars):
+            x, y = sx * RAW_W / SENSOR_W, sy * RAW_H / SENSOR_H
+            amp = amp0 * 10 ** (-0.4 * (mag - 1))
+            if amp < 3 or not (r <= x < RAW_W - r - 1 and r <= y < RAW_H - r - 1):
+                continue
+            u = ((k * 7919) % 100) / 50 - 1                             # Sternfarbe −1 (blau) … 1 (rot)
+            color = (0.45 * (1 + 0.3 * u), 1.0, 0.7 * (1 - 0.3 * u))
+            cx, cy = int(x), int(y)
+            for yy in range(cy - r, cy + r + 2):
+                gy = math.exp(-((yy - y) ** 2) / (2 * sigma * sigma))
+                if gy < 0.01:
+                    continue
+                base = yy * RAW_W
+                for xx in range(cx - r, cx + r + 2):
+                    v = amp * gy * math.exp(-((xx - x) ** 2) / (2 * sigma * sigma))
+                    if v >= 1:
+                        ch = (yy % 2) + (xx % 2)                         # 0 = R, 1 = G, 2 = B
+                        p = base + xx
+                        out[p] = min(RAW_WHITE, out[p] + int(v * color[ch]))
+        return out
+
+
+def dng_bytes(pixels, meta):
+    """Unkomprimiertes DNG (TIFF, wie die CR2 der 6D aufgebaut) mit CFA RGGB und EXIF inkl. Temperatur."""
+    def ifd(entries, start):
+        """entries: [(Tag, Typ, Werte-Bytes, Anzahl)] → (IFD-Bytes, Zusatzdaten-Bytes)."""
+        entries = sorted(entries)
+        extra = bytearray()
+        body = struct.pack("<H", len(entries))
+        data_at = start + 2 + 12 * len(entries) + 4
+        for tag, typ, val, count in entries:
+            if len(val) <= 4:
+                body += struct.pack("<HHI", tag, typ, count) + val.ljust(4, b"\0")
+            else:
+                body += struct.pack("<HHII", tag, typ, count, data_at + len(extra))
+                extra += val + (b"\0" if len(val) % 2 else b"")
+        return body + struct.pack("<I", 0), bytes(extra)
+
+    def short(*v):
+        return 3, struct.pack("<%dH" % len(v), *v), len(v)
+
+    def long(*v):
+        return 4, struct.pack("<%dI" % len(v), *v), len(v)
+
+    def ascii_(s):
+        b = s.encode() + b"\0"
+        return 2, b, len(b)
+
+    def rational(*v, signed=False):
+        vals = []
+        for x in v:
+            vals += [int(round(x * 10000)), 10000]
+        return (10 if signed else 5), struct.pack("<%d%s" % (len(vals), "i" if signed else "I"), *vals), len(v)
+
+    exp = meta["exposure"]
+    exif_entries = [(0x829A,) + rational(exp), (0x8827,) + short(meta["iso"]),
+                    (0x9003,) + ascii_(meta["time"]), (0x9400,) + rational(meta["temp"], signed=True)]
+    if sys.byteorder != "little":
+        pixels = array.array("H", pixels)
+        pixels.byteswap()
+    pix = pixels.tobytes()
+    ifd0_at = 8
+    n0 = 22
+    exif_at = ifd0_at + 2 + 12 * n0 + 4 + 512                           # Platz für die Zusatzdaten von IFD0
+    exif, exif_extra = ifd([(t, ty, v, c) for t, ty, v, c in exif_entries], exif_at)
+    data_at = exif_at + len(exif) + len(exif_extra)
+    data_at += -data_at % 16
+    cm = [7034, -804, -1014, -4420, 12564, 2058, -851, 1994, 5758]      # Farbmatrix der 6D (Adobe)
+    e0 = [(254,) + long(0), (256,) + long(RAW_W), (257,) + long(RAW_H), (258,) + short(16), (259,) + short(1),
+          (262,) + short(32803), (271,) + ascii_("Canon"), (272,) + ascii_("Canon EOS 6D"), (273,) + long(data_at),
+          (274,) + short(1), (277,) + short(1), (278,) + long(RAW_H), (279,) + long(len(pix)), (284,) + short(1),
+          (33421,) + short(2, 2), (33422, 1, bytes([0, 1, 1, 2]), 4), (34665,) + long(exif_at),
+          (50706, 1, bytes([1, 4, 0, 0]), 4), (50714,) + long(RAW_BLACK), (50717,) + long(RAW_WHITE),
+          (50721,) + rational(*[v / 10000 for v in cm], signed=True), (50728,) + rational(0.45, 1.0, 0.70)]
+    assert len(e0) == n0
+    ifd0, extra0 = ifd(e0, ifd0_at)
+    head = b"II*\0" + struct.pack("<I", ifd0_at) + ifd0 + extra0
+    if len(head) > exif_at:
+        raise RuntimeError("DNG-Kopf zu groß")
+    head = head.ljust(exif_at, b"\0") + exif + exif_extra
+    return head.ljust(data_at, b"\0") + pix
+
+
 # ---------------------------------------------------------------- Hilfen
 def rec(typ, payload=b""):
     return struct.pack("<II", 8 + len(payload), typ) + payload
@@ -188,6 +326,17 @@ class Camera:
         self.reset_remote()
         self.ended_until = 0.0
         self.frozen = False
+        self.cap = args.cap                  # Objektivdeckel drauf (Darks, Bias)
+        self.ambient = args.temp             # Umgebungstemperatur; die Kamera erwärmt sich beim Belichten
+        self.heat, self.heat_time = 0.0, time.time()
+        self.sky_t0 = time.time()
+        self.sensor = None
+
+    def temperature(self):
+        now = time.time()
+        self.heat *= math.exp(-(now - self.heat_time) / 600)              # kühlt in ~10 min ab
+        self.heat_time = now
+        return round(self.ambient + self.heat, 1)
 
     def log(self, *a):
         if not self.args.quiet:
@@ -278,13 +427,24 @@ class Camera:
 
     def store_photo(self, seconds):
         p = self.props
-        gain = min(8.0, max(0.15, seconds * iso_value(p[P_ISO]) / 3200 * (2.8 / f_number(p[P_APERTURE])) ** 2))
-        buf = render(PHOTO_W, PHOTO_H, (0, 0, SENSOR_W, SENSOR_H), self.stars, self.sigma(),
-                     gain=gain, bg=min(140, 8 + 8 * gain))
+        temp = self.temperature()
+        self.heat = min(12.0, self.heat + seconds / 60 * 0.8)             # Sensor erwärmt sich
+        sky_time = (time.time() - seconds / 2 - self.sky_t0) * self.args.sky_speed
+        stars = [] if self.cap else sky_stars(self.stars, sky_time)
+        light = (2.8 / f_number(p[P_APERTURE])) ** 2
+        gain = min(8.0, max(0.15, seconds * iso_value(p[P_ISO]) / 3200 * light))
+        buf = render(PHOTO_W, PHOTO_H, (0, 0, SENSOR_W, SENSOR_H), stars, self.sigma(),
+                     gain=gain, bg=2 if self.cap else min(140, 8 + 8 * gain))
         jpeg = to_jpeg(PHOTO_W, PHOTO_H, buf, 90)
         files = [("JPG", 0x3801, jpeg)]
         if self.args.raw:                            # RAW+JPEG: erst die CR2, dann die JPG (wie die Kamera)
-            files.insert(0, ("CR2", 0xB103, (b"II*\0\x10\0\0\0CR" + jpeg) * 3))
+            if self.sensor is None:
+                self.sensor = Sensor()
+            pixels = self.sensor.frame(seconds, iso_value(p[P_ISO]), temp, sky=None if self.cap else (4, 9, 6.3),
+                                       stars=stars, sigma=1.1 + 0.03 * abs(self.focus), gain=light)
+            meta = {"exposure": seconds, "iso": int(round(iso_value(p[P_ISO]))), "temp": temp,
+                    "time": time.strftime("%Y:%m:%d %H:%M:%S")}
+            files.insert(0, ("CR2", 0xB103, dng_bytes(pixels, meta)))
         with self.lock:
             number = self.next_img
             self.next_img += 1
@@ -586,14 +746,35 @@ HELP = """Befehle:
   restart           Fernsteuerung sofort wieder bereit
   focus N           Abstand zur Schärfe setzen (0 = scharf)
   apo N             Abschaltautomatik nach N s ohne „wach halten“ (0 = aus)
+  cap on | cap off  Objektivdeckel drauf (Darks, Bias) / ab
+  temp N            Umgebungstemperatur in °C (Wärmesignal der RAWs)
+  raw on | raw off  zusätzlich RAW je Aufnahme
   status            Zustand anzeigen"""
 
 
 def console(cam, server):
     for line in sys.stdin:
-        cmd = line.split()
-        if not cmd:
+        command(cam, server, line)
+
+
+def watch_control(cam, server, path):
+    """Befehle aus einer Datei (für den Simulator im Hintergrund: 6d-fernsteuerung sim-cmd cap on)."""
+    while True:
+        time.sleep(0.3)
+        try:
+            with open(path) as f:
+                lines = f.readlines()
+            os.remove(path)
+        except OSError:
             continue
+        for line in lines:
+            cam.log("Steuerbefehl:", line.strip())
+            command(cam, server, line)
+
+
+def command(cam, server, line):
+    cmd = line.split()
+    if cmd:
         c = cmd[0].lower()
         if c == "mode" and len(cmd) > 1:
             cam.set_mode(cmd[1].upper())
@@ -613,10 +794,20 @@ def console(cam, server):
         elif c == "apo" and len(cmd) > 1:
             cam.args.apo = float(cmd[1])
             cam.log("Abschaltautomatik", cam.args.apo or "aus")
+        elif c in ("cap", "deckel") and len(cmd) > 1:
+            cam.cap = cmd[1].lower() in ("on", "an", "drauf", "1")
+            cam.log("Objektivdeckel", "drauf" if cam.cap else "ab")
+        elif c == "temp" and len(cmd) > 1:
+            cam.ambient = float(cmd[1])
+            cam.log("Umgebungstemperatur %.1f °C" % cam.ambient)
+        elif c == "raw" and len(cmd) > 1:
+            cam.args.raw = cmd[1].lower() in ("on", "an", "1")
+            cam.log("RAW+JPEG" if cam.args.raw else "nur JPEG")
         elif c == "status":
-            cam.log("verbunden=%s Session=%s Modus=%s Livebild=%s Lupe=%d× Fokus=%d Bilder=%d" % (
+            cam.log("verbunden=%s Session=%s Modus=%s Livebild=%s Lupe=%d× Fokus=%d Bilder=%d Deckel=%s %.1f °C" % (
                 bool(server.cmd_sock), cam.session, "B" if cam.props[P_AEMODE] == MODE_B else "M",
-                cam.props[P_EVF_OUT] == 2, cam.zoom, cam.focus, len(cam.objects)))
+                cam.props[P_EVF_OUT] == 2, cam.zoom, cam.focus, len(cam.objects), "drauf" if cam.cap else "ab",
+                cam.temperature()))
         else:
             print(HELP, flush=True)
 
@@ -633,7 +824,11 @@ def parse_args(argv=None):
     p.add_argument("--apo", type=float, default=0, help="Abschaltautomatik nach N s (0 = aus)")
     p.add_argument("--focus", type=int, default=60, help="Abstand zur Schärfe beim Start")
     p.add_argument("--reject", action="store_true", help="jede Anmeldung ablehnen (InitFail 0x1)")
-    p.add_argument("--raw", action="store_true", help="RAW+JPEG: pro Aufnahme eine .CR2 und eine .JPG")
+    p.add_argument("--raw", action="store_true", help="RAW+JPEG: pro Aufnahme eine .CR2 (DNG-Inhalt) und eine .JPG")
+    p.add_argument("--cap", action="store_true", help="Objektivdeckel drauf (Darks, Bias)")
+    p.add_argument("--temp", type=float, default=10.0, help="Umgebungstemperatur in °C")
+    p.add_argument("--sky-speed", type=float, default=1.0, help="Himmelsdrehung beschleunigen (1 = echt)")
+    p.add_argument("--control", metavar="DATEI", help="Befehle aus dieser Datei lesen (wie die Konsole)")
     p.add_argument("-v", "--verbose", action="store_true", help="jeden Befehl protokollieren")
     p.add_argument("-q", "--quiet", action="store_true")
     return p.parse_args(argv)
@@ -647,6 +842,8 @@ def main():
     if sys.stdin and sys.stdin.isatty():
         print(HELP, flush=True)
         threading.Thread(target=console, args=(cam, server), daemon=True).start()
+    if args.control:
+        threading.Thread(target=watch_control, args=(cam, server, args.control), daemon=True).start()
     try:
         while True:
             time.sleep(1)

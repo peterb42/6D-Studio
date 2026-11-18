@@ -11,6 +11,7 @@
   --radius:10px;
 }
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);
   font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
 button,select,input{font:inherit;color:inherit}
@@ -79,12 +80,36 @@ select:disabled{opacity:.45}
 .chip{padding:4px 10px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);cursor:pointer;font-size:12px}
 .chip.on{border-color:var(--accent);color:#fff;background:#1f3357}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#0a0c10;font-weight:650}
-#seriesCard input[type=text],#seriesCard input[type=number]{background:var(--panel2);border:1px solid var(--line);
+.card input[type=text],.card input[type=number]{background:var(--panel2);border:1px solid var(--line);
   border-radius:7px;padding:6px 8px;width:100%}
-#seriesCard .inline{display:flex;align-items:center;gap:6px;color:var(--muted)}
-#seriesCard .inline input[type=number]{width:64px}
+.card .inline{display:flex;align-items:center;gap:6px;color:var(--muted)}
+.card .inline input[type=number]{width:64px}
+.card .inline select{flex:1;min-width:0}
 .sline{font-variant-numeric:tabular-nums;font-weight:650;margin-top:12px}
-#sBar>div{background:var(--accent)}
+#sBar>div,#jobBar>div{background:var(--accent)}
+.row{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.warnbox{background:#2a2410;border:1px solid #6b5a1e;color:#f3e2a6;border-radius:8px;padding:8px 10px;font-size:12px;margin-bottom:8px}
+table.mini{width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums;margin-top:8px}
+table.mini th{color:var(--muted);font-weight:600;text-align:left;padding:3px 4px;border-bottom:1px solid var(--line)}
+table.mini td{padding:4px;border-bottom:1px solid var(--line);vertical-align:top}
+table.mini tr.match td{color:#fff;background:#13241a}
+table.mini td.why{color:var(--muted)}
+.ok{color:var(--ok)} .bad{color:var(--err)} .warn{color:var(--warn)}
+.x{background:none;border:0;color:var(--muted);cursor:pointer;padding:0 4px}
+.x:hover{color:var(--err)}
+.steps{margin-top:12px;counter-reset:step}
+.step{border-left:2px solid var(--line);padding:0 0 12px 16px;margin-left:10px;position:relative}
+.step:last-child{border-left-color:transparent}
+.step::before{counter-increment:step;content:counter(step);position:absolute;left:-12px;top:-1px;width:22px;height:22px;
+  border-radius:50%;background:var(--panel2);border:1px solid var(--line2);font-size:11px;font-weight:650;
+  display:flex;align-items:center;justify-content:center}
+.step.done::before{content:"✓";background:#16351f;border-color:var(--ok);color:var(--ok)}
+.step.now::before{border-color:var(--accent);color:#fff}
+.step b{display:block;margin-bottom:4px}
+.check{display:flex;gap:8px;align-items:flex-start;margin:5px 0;font-size:13px;cursor:pointer}
+.check input{margin-top:3px}
+.auto{font-size:13px;margin:3px 0}
+#stackUnder input[type=range]{width:120px}
 .photo img.main{width:100%;border-radius:8px;border:1px solid var(--line);display:block;background:#000}
 .thumbs{display:flex;gap:6px;margin-top:8px;overflow-x:auto}
 .thumbs img{height:46px;border-radius:5px;border:1px solid var(--line);cursor:pointer}
@@ -113,6 +138,9 @@ body.night #red{display:block}
 <main>
   <section class="card">
     <div class="toolbar">
+      <div class="group" title="Was das große Bild zeigt (Taste V)"><span class="lbl">Anzeige</span>
+        <button class="btn view" data-v="lv">Kamera</button><button class="btn view" data-v="stack">Live-Stack</button>
+      </div>
       <div class="group"><button class="btn" id="lvBtn">Livebild</button></div>
       <div class="group"><span class="lbl">Lupe</span>
         <button class="btn z" data-z="1">1×</button><button class="btn z" data-z="5">5×</button><button class="btn z" data-z="10">10×</button>
@@ -129,14 +157,28 @@ body.night #red{display:block}
 
     <div class="stage" id="stage">
       <img id="lv" alt="" draggable="false">
+      <img id="stackImg" alt="" draggable="false" hidden>
       <div class="empty" id="empty"></div>
       <div class="overlay cross" id="cross" hidden><i></i></div>
       <div class="overlay"><div class="marker" id="marker"></div><div class="star" id="starbox"></div></div>
       <div class="tag" id="zoomtag" hidden></div>
       <div class="tag" id="fps" hidden></div>
+      <div class="tag" id="stacktag" hidden></div>
     </div>
 
-    <div class="under">
+    <div class="under" id="stackUnder" hidden>
+      <div class="group" title="Nur die Anzeige – die gespeicherten FITS-Daten bleiben linear">
+        <span class="lbl">Helligkeit</span><input type="range" id="stStretch" min="0.05" max="0.5" step="0.01" value="0.25">
+        <span class="lbl">Schwarzpunkt</span><input type="range" id="stBlack" min="-6" max="0" step="0.1" value="-2.8">
+        <button class="btn" id="stDefault" title="Automatische Streckung wie Siril">Auto</button>
+      </div>
+      <div class="group">
+        <button class="btn" id="stSave">Speichern</button><button class="btn" id="stOpen" title="Gespeichertes PNG öffnen">Öffnen</button>
+      </div>
+      <span class="hint" id="stInfo"></span>
+    </div>
+
+    <div class="under" id="lvUnder">
       <div class="group"><span class="lbl">Fokus</span>
         <button class="btn fc" data-s="-3" title="nah – großer Schritt">⟪</button>
         <button class="btn fc" data-s="-2" title="nah – mittlerer Schritt">‹‹</button>
@@ -156,12 +198,12 @@ body.night #red{display:block}
         <span class="lbl">Kontrast</span><input type="range" id="contrast" min="1" max="4" step="0.1" value="1">
       </div>
     </div>
-    <div class="note">
+    <div class="note" id="lvNote">
       Scharfstellen: Livebild an, hellen Stern per Klick als Ziel wählen (oder in die Bildmitte schwenken), Lupe 10×, dann
       fokussieren, bis der Stern-Ø am kleinsten ist. Doppelklick ins Bild = 10× an dieser Stelle.
       Fokusantrieb nur mit AF-Objektiv (Schalter auf AF) – bei MF-Objektiven am Ring drehen.
       Tasten: <kbd>L</kbd> Livebild · <kbd>1</kbd> <kbd>5</kbd> <kbd>0</kbd> Lupe · Pfeile Ausschnitt ·
-      <kbd>,</kbd> <kbd>.</kbd> Fokus fein · <kbd>N</kbd> Nachtmodus
+      <kbd>,</kbd> <kbd>.</kbd> Fokus fein · <kbd>V</kbd> Kamera/Live-Stack · <kbd>N</kbd> Nachtmodus
     </div>
   </section>
 
@@ -217,7 +259,13 @@ body.night #red{display:block}
       <div class="field" id="sCamRow" hidden><label>Belichtung</label><span class="hint" id="sCamTime"></span></div>
       <div class="field"><label for="sPause">Pause</label>
         <span class="inline"><input type="number" id="sPause" min="0" max="600" step="0.5" value="3"> s dazwischen</span></div>
-      <label class="toggle"><input type="checkbox" id="sDownload"> Bilder während der Serie auf den Mac laden</label>
+      <div class="field"><label for="sDownload">Auf den Mac</label>
+        <select id="sDownload">
+          <option value="all">alles laden</option>
+          <option value="raw">nur RAW laden</option>
+          <option value="jpeg">nur JPEG laden (schnell)</option>
+          <option value="none">nichts – bleibt auf der Karte</option>
+        </select></div>
       <div class="note" id="sHint"></div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
         <button class="btn primary" id="sStart">Serie starten</button>
@@ -228,6 +276,83 @@ body.night #red{display:block}
         <div class="bar" id="sBar"><div></div></div>
         <div class="hint" id="sSub" style="margin-top:6px"></div>
       </div>
+    </section>
+
+    <section class="card" id="liveCard">
+      <h2>Live-Stack</h2>
+      <div class="warnbox" id="lMissing" hidden></div>
+      <div class="sline" id="lLine" style="margin-top:0">aus</div>
+      <div class="hint" id="lSub"></div>
+      <div class="field"><label for="lBias">Bias</label><select id="lBias"></select></div>
+      <div class="field"><label for="lDark">Dark</label><select id="lDark"></select></div>
+      <label class="toggle" title="Siril: Faktor k ∈ [0, 2], kleinste Streuung im 512×512-Feld der Bildmitte">
+        <input type="checkbox" id="lOpt" checked> Dark-Optimierung (gleicht Temperatur aus)</label>
+      <label class="toggle"><input type="checkbox" id="lHot" checked> Hotpixel-Filter je Bild</label>
+      <label class="toggle" title="Verwirft je Pixel den hellsten Wert (ab 3 Bildern) – wie bei OpenLiveStacker">
+        <input type="checkbox" id="lSat" checked> Satelliten und Flugzeuge entfernen</label>
+      <div class="note" id="lCalib"></div>
+      <div class="row">
+        <button class="btn primary" id="lStart">Live-Stack starten</button>
+        <button class="btn" id="lStop" hidden>Beenden &amp; speichern</button>
+        <button class="btn" id="lReset" hidden title="Stapel leeren – das nächste Bild wird die neue Referenz">Neu beginnen</button>
+      </div>
+      <div id="lHist"></div>
+      <div class="field" style="margin-top:12px"><label for="lSession">Nachstacken</label>
+        <span class="inline"><select id="lSession"></select><button class="btn" id="lFolder">Einlesen</button></span></div>
+      <div class="note">Jedes Light, das auf den Mac kommt (Serie oder Bulb), wird eingerechnet. RAWs werden mit Bias und
+        Dark kalibriert, JPEGs nur ausgerichtet. Tipp: Kamera auf RAW+JPEG und in der Serie „nur RAW laden“.</div>
+    </section>
+
+    <section class="card" id="libCard">
+      <h2>Dark- &amp; Bias-Bibliothek</h2>
+      <div class="warnbox" id="libMissing" hidden></div>
+      <div id="libTable" class="hint">Lade …</div>
+      <div class="row">
+        <button class="btn primary" id="wizOpen">Geführt aufnehmen …</button>
+      </div>
+      <div id="wiz" hidden>
+        <div class="steps">
+          <div class="step" id="wz1"><b>Was aufnehmen?</b>
+            <div class="row" style="margin-top:4px">
+              <button class="btn wk" data-k="bias">Bias</button><button class="btn wk" data-k="dark">Darks</button>
+            </div>
+            <div class="hint" id="wzWhat" style="margin-top:6px"></div>
+          </div>
+          <div class="step" id="wz2"><b>Kamera vorbereiten</b>
+            <div id="wzAuto"></div>
+            <label class="check"><input type="checkbox" class="wc"> Objektivdeckel drauf</label>
+            <label class="check"><input type="checkbox" class="wc"> Sucher abgedeckt (Okularabdeckung am Kameragurt) – sonst
+              fällt Licht durch den Sucher auf den Sensor</label>
+            <label class="check"><input type="checkbox" class="wc"> Rauschreduzierung bei Langzeitbelichtung AUS
+              (Menü Aufnahme 4) – sonst macht die Kamera nach jedem Bild selbst ein Dark</label>
+            <label class="check"><input type="checkbox" class="wc"> Bildqualität RAW oder RAW+JPEG</label>
+          </div>
+          <div class="step" id="wz3"><b>Aufnehmen</b>
+            <div class="field" id="wzExpRow"><label>Belichtung</label>
+              <span class="inline"><input type="number" id="wzMin" min="0" max="999" value="0"> min
+                <input type="number" id="wzSec" min="0" max="59" value="30"> s</span></div>
+            <div class="field"><label for="wzCount">Anzahl</label>
+              <span class="inline"><input type="number" id="wzCount" min="3" max="200" value="20"> Bilder</span></div>
+            <div class="hint" id="wzTime"></div>
+            <div class="row">
+              <button class="btn primary" id="wzStart">Aufnahme starten</button>
+              <button class="btn" id="wzClose">Schließen</button>
+            </div>
+          </div>
+          <div class="step" id="wz4"><b>Master erstellen</b>
+            <div class="hint" id="wzResult">Startet von selbst, sobald alle RAWs auf dem Mac sind, und landet in der
+              Bibliothek.</div>
+          </div>
+        </div>
+      </div>
+      <div id="job" hidden>
+        <div class="sline" id="jobLine"></div>
+        <div class="bar" id="jobBar"><div></div></div>
+        <div class="hint" id="jobSub" style="margin-top:6px"></div>
+      </div>
+      <div class="field" style="margin-top:12px"><label for="libSrc">Aus Ordner</label>
+        <span class="inline"><select id="libSrc"></select><button class="btn" id="libBuild">Master erstellen</button></span></div>
+      <div class="note" id="libNote"></div>
     </section>
 
     <section class="card photo">
@@ -263,6 +388,8 @@ function fmt(sec) {
 }
 
 let S = null, seq = 0, lvUrl = null, target = null, clockOffset = 0, lastBulb = null;
+let view = store.get('view', 'lv'), stackSeq = -1, stackUrl = null, stackBusy = false;   // Live-Stack-Anzeige
+let LIB = null, libSeq = -1;                                                           // Bibliothek
 
 // ---------------------------------------------------------------- Server
 function toast(msg, kind) {
@@ -277,7 +404,7 @@ async function api(path, body) {
     const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
     const j = await r.json();
     if (!j.ok) toast(j.error || 'Fehler');
-    poll(true);
+    await poll(true);
     return j.ok;
   } catch (e) { toast('6D Studio ist nicht erreichbar'); return false; }
 }
@@ -341,12 +468,21 @@ function render() {
   $('#fps').textContent = `${lv.fps} B/s`;
   if (lv.seq < seq) seq = 0;          // Studio wurde neu gestartet
   if (!lv.on && lvUrl) { URL.revokeObjectURL(lvUrl); lvUrl = null; $('#lv').removeAttribute('src'); showFocus(null); }
-  const empty = !S.connected ? 'Kamera nicht verbunden.<br>' + esc(S.status)
+  const L = S.live;
+  const empty = view === 'stack'
+    ? (S.imaging ? 'Live-Stack nicht verfügbar:<br>' + esc(S.imaging)
+       : !L ? 'Live-Stack ist aus.<br>Rechts in „Live-Stack“ starten – dann wird jedes neue Light eingerechnet.'
+       : !stackUrl ? (L.frames ? 'Lade das Stack-Bild …'
+                     : L.busy ? `Rechne ${esc(L.busy)} …`
+                     : L.history.length ? 'Noch kein Bild passt als Referenz (zu wenige Sterne?).'
+                     : 'Warte auf das erste Light …') : '')
+    : !S.connected ? 'Kamera nicht verbunden.<br>' + esc(S.status)
     : !lv.on ? 'Livebild ist aus.<br>Zum Scharfstellen „Livebild“ einschalten.'
     : b.active ? 'Belichtung läuft – Livebild pausiert.'
     : !lvUrl ? 'Warte auf das Livebild …' : '';
   $('#empty').innerHTML = empty;
   $('#empty').style.display = empty ? 'flex' : 'none';
+  if (view === 'stack') { $('#zoomtag').hidden = $('#fps').hidden = true; }
   placeMarker();
 
   // Bulb
@@ -360,6 +496,9 @@ function render() {
   $('#bulbNote').textContent = S.connected && !S.bulb_mode && !b.active ? 'Für Bulb das Moduswahlrad der Kamera auf B stellen.' : '';
   $('#shootBtn').disabled = !S.connected || S.bulb_mode || b.active || seriesOn;
   renderSeries();
+  renderLive();
+  if (S.library_seq !== libSeq) { libSeq = S.library_seq; loadLibrary(); }
+  renderLibrary();
 
   // Fotos
   const ph = S.photos;
@@ -423,20 +562,20 @@ const S_FIELDS = ['sType', 'sTarget', 'sCount', 'sExpMin', 'sExpSec', 'sPause', 
 function seriesBody() {
   return {
     type: $('#sType').value, target: $('#sTarget').value.trim(),
-    count: +$('#sCount').value || 1, pause: +$('#sPause').value || 0, download: $('#sDownload').checked,
+    count: +$('#sCount').value || 1, pause: +$('#sPause').value || 0, download: $('#sDownload').value,
     exposure: (+$('#sExpMin').value || 0) * 60 + (+$('#sExpSec').value || 0),
   };
 }
 function saveSeriesForm() {
-  for (const id of S_FIELDS) store.set('s.' + id, $('#' + id).type === 'checkbox' ? $('#' + id).checked : $('#' + id).value);
+  for (const id of S_FIELDS) store.set('s.' + id, $('#' + id).value);
 }
 function loadSeriesForm() {
   for (const id of S_FIELDS) {
-    const v = store.get('s.' + id, null);
-    if (v === null) continue;
-    if ($('#' + id).type === 'checkbox') $('#' + id).checked = v; else $('#' + id).value = v;
+    let v = store.get('s.' + id, null);
+    if (id === 'sDownload' && typeof v === 'boolean') v = v ? 'all' : 'none';    // früher ein Häkchen
+    if (v !== null) $('#' + id).value = v;
   }
-  if (store.get('s.sDownload', null) === null) $('#sDownload').checked = $('#sType').value === 'light';
+  if (!$('#sDownload').value) $('#sDownload').value = $('#sType').value === 'light' ? 'all' : 'none';
 }
 
 function renderSeries() {
@@ -458,7 +597,9 @@ function renderSeries() {
   if (!s) return;
   const per = (s.exposure || 0) + s.pause + 2.5;
   $('#sBar').firstElementChild.style.width = (s.done / s.count * 100) + '%';
-  $('#sSub').textContent = `${s.folder}` + (active ? ` · Rest ≈ ${fmt((s.count - s.done) * per)}` : '');
+  $('#sSub').textContent = `${s.folder}` + (active ? ` · Rest ≈ ${fmt((s.count - s.done) * per)}` : '')
+    + (s.download !== 'none' ? ` · ${s.loaded} RAW${s.loaded === 1 ? '' : 's'} geladen` : '')
+    + (s.master ? ' · danach Master für die Bibliothek' : '');
   if (!active) {
     $('#sLine').textContent = s.error ? `Abgebrochen: ${s.error}`
       : `Fertig: ${s.done} von ${s.count} ${s.label}${s.done === 1 ? '' : 's'}`;
@@ -475,7 +616,7 @@ function tickSeries() {
 $('#sType').addEventListener('change', () => {
   const type = $('#sType').value;
   $('#sCount').value = S_COUNT[type];
-  $('#sDownload').checked = type === 'light';
+  $('#sDownload').value = type === 'light' ? 'all' : 'none';
   saveSeriesForm();
   if (S) renderSeries();
 });
@@ -491,6 +632,291 @@ $('#sStart').onclick = async () => {
 };
 $('#sStop').onclick = () => api('/api/series/stop', {now: !!(S && S.series && S.series.stop)});
 loadSeriesForm();
+
+// ---------------------------------------------------------------- Live-Stack
+const fmtExp = s => !s ? '–' : s >= 1 ? `${+s.toFixed(1)} s` : `1/${Math.round(1 / s)} s`;
+const fmtTemp = t => t === null || t === undefined ? '–' : `${Math.round(t)} °C`;
+const shortName = n => n.length > 26 ? '…' + n.slice(-24) : n;
+
+function setView(v) {
+  view = v;
+  store.set('view', v);
+  $$('.view').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+  const st = v === 'stack';
+  $('#lv').hidden = st; $('#stackImg').hidden = !st;
+  $('#lvUnder').hidden = st; $('#lvNote').hidden = st; $('#stackUnder').hidden = !st;
+  $('#starbox').style.display = 'none';
+  if (S) render();
+}
+async function loadStack() {
+  if (stackBusy) return;
+  stackBusy = true;
+  try {
+    const r = await fetch('/api/live.png', {cache: 'no-store'});
+    if (r.status === 200) {
+      stackSeq = +r.headers.get('X-Stack-Seq');
+      const url = URL.createObjectURL(await r.blob());
+      await new Promise(res => {
+        const img = $('#stackImg');
+        img.onload = () => { if (stackUrl && stackUrl !== url) URL.revokeObjectURL(stackUrl); stackUrl = url; res(); };
+        img.onerror = () => { URL.revokeObjectURL(url); res(); };
+        img.src = url;
+      });
+    } else {
+      stackSeq = S && S.live ? S.live.seq : -1;
+      if (stackUrl) { URL.revokeObjectURL(stackUrl); stackUrl = null; $('#stackImg').removeAttribute('src'); }
+    }
+  } catch (e) {}
+  stackBusy = false;
+}
+
+function masterOptions(kind) {
+  const list = LIB ? LIB.masters.filter(m => m.kind === kind) : [];
+  return [['auto', 'Automatisch (passend zu den Lights)'], ['none', kind === 'bias' ? 'Keins – Schwarzwert der Kamera' : 'Keins']]
+    .concat(list.map(m => [m.id, `ISO ${m.iso}${kind === 'dark' ? ' · ' + fmtExp(m.exposure) : ''} · ${fmtTemp(m.temp)} · ${m.n}× · ${(m.date || '').slice(0, 10)}`]));
+}
+function fillOptions(el, opts, keep) {
+  const key = JSON.stringify(opts);
+  if (el.dataset.key === key) return;
+  const cur = el.value || keep;
+  el.innerHTML = '';
+  for (const [v, l] of opts) el.add(new Option(l, v));
+  el.dataset.key = key;
+  if ([...el.options].some(o => o.value === cur)) el.value = cur;
+}
+
+function renderLive() {
+  const L = S.live, miss = S.imaging, running = !!(L && L.active);
+  $('#lMissing').hidden = !miss;
+  $('#lMissing').textContent = miss ? `Live-Stack und Masters brauchen numpy und rawpy: ${miss}` : '';
+  fillOptions($('#lBias'), masterOptions('bias'), store.get('l.bias', 'auto'));
+  fillOptions($('#lDark'), masterOptions('dark'), store.get('l.dark', 'auto'));
+  ['lBias', 'lDark', 'lOpt', 'lHot', 'lSat'].forEach(id => $('#' + id).disabled = running || !!miss);
+  $('#lStart').hidden = running;
+  $('#lStart').disabled = !!miss;
+  $('#lStop').hidden = $('#lReset').hidden = !running;
+  $('#lFolder').disabled = !!miss || !$('#lSession').value;
+  $$('.view').forEach(b => b.classList.toggle('on', b.dataset.v === view));
+
+  const tag = $('#stacktag');
+  tag.hidden = !(view === 'stack' && L && L.frames);
+  if (!L) {
+    $('#lLine').textContent = 'aus';
+    $('#lSub').textContent = 'Start legt einen neuen Stapel an. Darks und Bias wählt das Studio beim ersten RAW aus der Bibliothek.';
+    $('#lCalib').textContent = '';
+    $('#lHist').innerHTML = '';
+    $('#stInfo').textContent = '';
+    return;
+  }
+  if (view === 'stack' && L.seq !== stackSeq) loadStack();
+  $('#lLine').textContent = `${L.frames} Bild${L.frames === 1 ? '' : 'er'} · ${fmt(L.exposure)} Belichtung`
+    + (L.rejected ? ` · ${L.rejected} verworfen` : '') + (L.kind ? ` · ${L.kind.toUpperCase()}` : '');
+  $('#lSub').textContent = L.busy ? `rechnet ${L.busy} …${L.queue ? ` (+${L.queue} wartend)` : ''}`
+    : L.queue ? `${L.queue} Bilder warten`
+    : running ? 'wartet auf das nächste Light'
+    : L.done ? `beendet · ${L.out}` : 'speichert …';
+  const c = L.calib || {}, last = L.history.find(h => h.ok);
+  $('#lCalib').textContent = L.kind === 'jpeg' ? 'JPEGs: ohne Kalibrierung (nicht linear) – nur ausrichten und mitteln.'
+    : !c.hasOwnProperty('dark') ? 'Kalibrierung wird beim ersten RAW gewählt.'
+    : `Bias: ${c.bias || 'Schwarzwert ' + c.offset} · Dark: ${c.dark ? `${c.dark}` : 'keins'}`
+      + (c.dark ? ` · ${c.hot} Hotpixel` : '') + (last && last.k !== undefined ? ` · k = ${last.k}` : '')
+      + (L.temp !== null && L.temp !== undefined ? ` · Lights ${fmtTemp(L.temp)}` : '');
+  $('#lHist').innerHTML = L.history.length ? `<table class="mini"><tr><th></th><th>Bild</th><th>Sterne</th><th>k</th><th>FWHM</th><th>Drehung</th></tr>`
+    + L.history.slice(0, 8).map(h => h.ok
+      ? `<tr><td class="ok">✓</td><td title="${esc(h.name)}">${esc(shortName(h.name))}</td><td>${h.matched}/${h.stars}</td><td>${h.k ?? '–'}</td><td>${h.fwhm ?? '–'}</td><td>${h.rot.toFixed(2)}°</td></tr>`
+      : `<tr><td class="bad">✖</td><td title="${esc(h.name)}">${esc(shortName(h.name))}</td><td class="why" colspan="4">${esc(h.reason)}</td></tr>`).join('')
+    + '</table>' : '';
+  tag.textContent = `Live-Stack · ${L.frames}× · ${fmt(L.exposure)}`;
+  $('#stInfo').textContent = L.saved.length ? `gespeichert: ${L.saved[L.saved.length - 1]}` : '';
+  $('#stOpen').disabled = !L.saved.length;
+  if (document.activeElement !== $('#stStretch')) $('#stStretch').value = L.opts.stretch;
+  if (document.activeElement !== $('#stBlack')) $('#stBlack').value = L.opts.black;
+}
+
+$$('.view').forEach(b => b.onclick = () => setView(b.dataset.v));
+$('#lBias').onchange = e => store.set('l.bias', e.target.value);
+$('#lDark').onchange = e => store.set('l.dark', e.target.value);
+for (const id of ['lOpt', 'lHot', 'lSat']) {
+  $('#' + id).checked = store.get('l.' + id, true);
+  $('#' + id).onchange = e => store.set('l.' + id, e.target.checked);
+}
+function liveBody() {
+  return {bias: $('#lBias').value || 'auto', dark: $('#lDark').value || 'auto', optimize: $('#lOpt').checked,
+          hotpixels: $('#lHot').checked, satellites: $('#lSat').checked, target: $('#sTarget').value.trim()};
+}
+$('#lStart').onclick = async () => { if (await api('/api/live/start', liveBody())) { stackSeq = -1; setView('stack'); } };
+$('#lStop').onclick = () => api('/api/live/stop');
+$('#lReset').onclick = () => { if (confirm('Stapel leeren und neu beginnen?')) api('/api/live/reset'); };
+$('#lFolder').onclick = async () => {
+  if (await api('/api/live/folder', Object.assign(liveBody(), {session: $('#lSession').value}))) setView('stack');
+};
+$('#stSave').onclick = () => api('/api/live/save');
+$('#stOpen').onclick = () => window.open('/api/live/saved.png?t=' + Date.now(), '_blank');
+let viewTimer = null;
+function sendView() {
+  clearTimeout(viewTimer);
+  viewTimer = setTimeout(() => api('/api/live/view', {stretch: +$('#stStretch').value, black: +$('#stBlack').value}), 250);
+}
+$('#stStretch').oninput = $('#stBlack').oninput = sendView;
+$('#stDefault').onclick = () => { $('#stStretch').value = 0.25; $('#stBlack').value = -2.8; sendView(); };
+
+// ---------------------------------------------------------------- Dark- & Bias-Bibliothek
+async function loadLibrary() {
+  try {
+    LIB = await (await fetch('/api/library', {cache: 'no-store'})).json();
+  } catch (e) { return; }
+  const src = $('#libSrc');
+  const builds = [];
+  for (const s of LIB.sources) {
+    if (s.dark >= 3) builds.push([`${s.session}|dark`, `${s.session} · ${s.dark} Darks`]);
+    if (s.bias >= 3) builds.push([`${s.session}|bias`, `${s.session} · ${s.bias} Bias`]);
+  }
+  fillOptions(src, builds.length ? builds : [['', '– keine Ordner mit mind. 3 RAW-Darks/-Bias –']]);
+  const lights = LIB.sources.filter(s => s.light || s.light_jpeg)
+    .map(s => [s.session, `${s.session} · ${s.light ? s.light + ' RAW' : s.light_jpeg + ' JPEG'}`]);
+  fillOptions($('#lSession'), lights.length ? lights : [['', '– keine Sitzung mit Lights –']]);
+  if (S) render();
+}
+setInterval(loadLibrary, 20000);
+
+function lightMatch(m, ll) {
+  if (!ll || m.iso !== ll.iso) return false;
+  return m.kind === 'bias' || !!(ll.exposure && m.exposure && Math.abs(m.exposure / ll.exposure - 1) <= 0.05);
+}
+function renderLibrary() {
+  const miss = S.imaging;
+  $('#libMissing').hidden = !miss;
+  $('#libMissing').textContent = miss ? `Masters erstellen braucht numpy und rawpy: ${miss}` : '';
+  $('#libBuild').disabled = !!miss || !$('#libSrc').value || !!(S.master_job && S.master_job.active);
+  if (LIB) {
+    const ll = S.last_light;
+    const key = JSON.stringify([LIB.masters, ll && [ll.iso, ll.exposure]]);
+    if ($('#libTable').dataset.key !== key) {
+      $('#libTable').dataset.key = key;
+      $('#libTable').className = LIB.masters.length ? '' : 'hint';
+      $('#libTable').innerHTML = !LIB.masters.length
+        ? 'Noch keine Masters. „Geführt aufnehmen“ oder aus einem Sitzungsordner erstellen.'
+        : `<table class="mini"><tr><th>Typ</th><th>ISO</th><th>Zeit</th><th>Temp.</th><th>Bilder</th><th>Datum</th><th></th></tr>`
+          + LIB.masters.map(m => `<tr class="${lightMatch(m, ll) ? 'match' : ''}" title="${esc(m.name)}${m.noise !== null ? ` · Rauschen ${m.noise} ADU` : ''}${m.hot !== null && m.hot !== undefined ? ` · ${m.hot} Hotpixel` : ''}">
+              <td>${m.label}${lightMatch(m, ll) ? ' <span class="ok">✓</span>' : ''}</td><td>${m.iso}</td>
+              <td>${m.kind === 'dark' ? fmtExp(m.exposure) : '–'}</td>
+              <td>${fmtTemp(m.temp)}${m.tmin !== null && m.tmax !== null && m.tmax - m.tmin >= 1 ? `<span class="hint"> (${Math.round(m.tmin)}–${Math.round(m.tmax)})</span>` : ''}</td>
+              <td>${m.n}</td><td>${esc((m.date || '').slice(0, 10))}</td>
+              <td><button class="x" data-del="${esc(m.id)}" title="Löschen">✕</button></td></tr>`).join('')
+          + '</table>';
+    }
+    $('#libNote').textContent = `Ordner: ${LIB.folder} · FITS, direkt in Siril nutzbar.`
+      + (ll ? ` ✓ = passt zu den letzten Lights (ISO ${ll.iso}, ${fmtExp(ll.exposure)}${ll.temp !== null ? ', ' + fmtTemp(ll.temp) : ''}).` : '');
+  }
+  renderJob();
+  renderWizard();
+}
+function renderJob() {
+  const j = S.master_job;
+  $('#job').hidden = !j;
+  if (!j) return;
+  const pct = j.total ? Math.min(100, j.done / j.total * 100) : 0;
+  $('#jobBar').firstElementChild.style.width = (j.active ? pct : 100) + '%';
+  $('#jobLine').textContent = j.error ? `Master-${j.label}: ${j.error}`
+    : j.active ? `Master-${j.label}: ${j.phase}${j.total ? ` · ${j.done}/${j.total}` : ''}`
+    : `✔︎ Master-${j.label} fertig`;
+  $('#jobLine').className = 'sline ' + (j.error ? 'bad' : j.active ? '' : 'ok');
+  $('#jobSub').textContent = j.results.map(r => r && r.name).filter(Boolean).join(' · ') || (j.group || j.source || '');
+}
+$('#libTable').addEventListener('click', e => {
+  const id = e.target.dataset.del;
+  if (id && confirm(`Master löschen?\n${id}`)) api('/api/library/delete', {id});
+});
+$('#libBuild').onclick = () => {
+  const [session, kind] = $('#libSrc').value.split('|');
+  api('/api/library/build', {session, kind});
+};
+
+// ---------- Geführte Aufnahme von Bias und Darks
+const WIZ_TEXT = {
+  bias: 'Bias = Ausleserauschen und Offset des Sensors, kürzeste Zeit (1/4000). Je ISO einmal 40–50 Stück – gern ' +
+        'zu Hause, sie ändern sich kaum. Werden von Lights, Darks und Flats abgezogen.',
+  dark: 'Darks = Wärmerauschen und Hotpixel. Gleiche ISO und Zeit wie die Lights, 15–30 Stück – am besten direkt ' +
+        'nach den Lights, solange die Kamera gleich warm ist. Die Dark-Optimierung gleicht kleine Temperatur­unterschiede aus.',
+};
+let wiz = {open: false, kind: store.get('wiz.kind', 'dark'), sid: null};
+function wizChecks() {
+  const ll = S.last_light, k = wiz.kind, out = [];
+  const mode = S.mode, modeOk = k === 'bias' ? mode === 'M' : (mode === 'B' || mode === 'M');
+  out.push([modeOk, modeOk ? `Moduswahlrad ${mode}` : `Moduswahlrad auf ${k === 'bias' ? 'M' : 'B (oder M)'} stellen`]);
+  const iso = S.iso.label;
+  if (ll && ll.iso) out.push([String(ll.iso) === iso ? true : null,
+    `ISO ${iso}` + (String(ll.iso) === iso ? ' – wie die letzten Lights' : ` – die letzten Lights hatten ISO ${ll.iso}`)]);
+  else out.push([iso && iso !== '–' && iso !== 'Auto' ? true : null, `ISO ${iso} – dieselbe wie bei den Lights`]);
+  if (k === 'bias') out.push([true, 'Zeit: das Studio stellt die kürzeste Zeit (1/4000) ein']);
+  else if (!S.bulb_mode && ll && ll.exposure) {
+    const cam = S.shutter.label, same = Math.abs(parseShutter(cam) / ll.exposure - 1) < 0.05;
+    out.push([same ? true : null, `Zeit der Kamera ${cam}` + (same ? ' – wie die Lights' : ` – Lights: ${fmtExp(ll.exposure)}`)]);
+  }
+  if (k === 'dark' && ll && ll.temp !== null && ll.temp !== undefined)
+    out.push([true, `Lights hatten ${fmtTemp(ll.temp)} – Darks jetzt aufnehmen, solange es so bleibt`]);
+  return out;
+}
+function parseShutter(l) {
+  if (!l) return 0;
+  if (l.startsWith('1/')) return 1 / +l.slice(2);
+  return parseFloat(l);
+}
+function wizExposure() { return (+$('#wzMin').value || 0) * 60 + (+$('#wzSec').value || 0); }
+function renderWizard() {
+  $('#wiz').hidden = !wiz.open;
+  $('#wizOpen').hidden = wiz.open;
+  if (!wiz.open) return;
+  const k = wiz.kind;
+  $$('.wk').forEach(b => b.classList.toggle('on', b.dataset.k === k));
+  $('#wzWhat').textContent = WIZ_TEXT[k];
+  const checks = wizChecks();
+  $('#wzAuto').innerHTML = checks.map(([ok, t]) =>
+    `<div class="auto"><span class="${ok ? 'ok' : ok === null ? 'warn' : 'bad'}">${ok ? '✓' : ok === null ? '!' : '✗'}</span> ${esc(t)}</div>`).join('');
+  const manual = $$('.wc').every(c => c.checked);
+  const autoOk = checks.every(([ok]) => ok !== false);
+  const s = S.series, mine = s && wiz.sid && s.started === wiz.sid, running = mine && s.active;
+  const job = S.master_job, jobMine = mine && job && job.started >= wiz.sid;
+  $('#wz1').className = 'step done';
+  $('#wz2').className = 'step ' + (manual && autoOk ? 'done' : 'now');
+  $('#wz3').className = 'step ' + (mine && !running ? 'done' : manual && autoOk ? 'now' : '');
+  $('#wz4').className = 'step ' + (jobMine && !job.active && !job.error ? 'done' : jobMine ? 'now' : '');
+  $('#wzExpRow').hidden = !(k === 'dark' && S.bulb_mode);
+  const n = +$('#wzCount').value || 0, exp = k === 'bias' ? 0 : S.bulb_mode ? wizExposure() : parseShutter(S.shutter.label);
+  $('#wzTime').textContent = n ? `Aufnahme ≈ ${fmt(n * (exp + 3))} · Download der RAWs ≈ ${fmt(n * 25)} (~25 MB je Bild über den Hotspot, läuft nebenher)` : '';
+  $$('.wc, .wk, #wzCount, #wzMin, #wzSec').forEach(el => el.disabled = !!running);
+  $('#wzStart').disabled = !S.connected || !manual || !autoOk || !!(s && s.active) || S.bulb.active || !!S.imaging
+    || !!(job && job.active);
+  $('#wzStart').textContent = running ? `${s.label} ${s.index}/${s.count} · ${s.phase}` : 'Aufnahme starten';
+  $('#wzResult').textContent = !mine ? 'Startet von selbst, sobald alle RAWs auf dem Mac sind, und landet in der Bibliothek.'
+    : running ? `Läuft · ${s.loaded} von ${s.count} RAWs geladen – der Master wird danach gebaut.`
+    : !jobMine ? (s.error ? `Serie abgebrochen: ${s.error}` : 'Warte auf die Downloads …')
+    : job.error ? `Fehler: ${job.error}`
+    : job.active ? `${job.phase}${job.total ? ` · ${job.done}/${job.total}` : ''}`
+    : `Fertig: ${job.results.map(r => r && r.name).filter(Boolean).join(', ')} – steht in der Bibliothek und wird beim Live-Stack automatisch gewählt.`;
+}
+function wizSetKind(k) {
+  wiz.kind = k;
+  store.set('wiz.kind', k);
+  $('#wzCount').value = k === 'bias' ? 40 : 20;
+  if (k === 'dark' && S && S.last_light && S.last_light.exposure) {
+    const e = Math.round(S.last_light.exposure);
+    $('#wzMin').value = Math.floor(e / 60); $('#wzSec').value = e % 60;
+  }
+  if (S) renderWizard();
+}
+$$('.wk').forEach(b => b.onclick = () => wizSetKind(b.dataset.k));
+$$('.wc').forEach(c => c.onchange = () => S && renderWizard());
+['#wzCount', '#wzMin', '#wzSec'].forEach(id => $(id).addEventListener('input', () => S && renderWizard()));
+$('#wizOpen').onclick = () => { wiz.open = true; wizSetKind(wiz.kind); };
+$('#wzClose').onclick = () => { wiz.open = false; renderWizard(); };
+$('#wzStart').onclick = async () => {
+  const k = wiz.kind, before = S.series ? S.series.started : null;
+  const ok = await api('/api/series/start', {
+    type: k, target: $('#sTarget').value.trim() || 'Kalibrierung', count: +$('#wzCount').value || 20,
+    exposure: wizExposure(), pause: k === 'bias' ? 0.5 : 1, master: true, download: 'raw'});
+  if (ok && S.series && S.series.started !== before) wiz.sid = S.series.started;
+};
 
 // ---------------------------------------------------------------- Livebild
 function contentRect() {
@@ -700,8 +1126,11 @@ document.addEventListener('keydown', e => {
   else if (k === ',') api('/api/focus', {step: -1});
   else if (k === '.') api('/api/focus', {step: 1});
   else if (k === 'n' || k === 'N') $('#nightBtn').click();
+  else if (k === 'v' || k === 'V') setView(view === 'stack' ? 'lv' : 'stack');
 });
 
+setView(view);
+loadLibrary();
 poll();
 lvLoop();
 </script>

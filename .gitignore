@@ -10,3 +10,7 @@ __pycache__/
 *.JPG
 *.jpg
 !docs/**/*.jpg
+*.fits
+*.fit
+*.dng
+*.DNG

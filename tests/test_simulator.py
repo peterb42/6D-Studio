@@ -234,6 +234,74 @@ class TestStudioMitSimulator(unittest.TestCase):
         self.assertEqual([os.path.splitext(f)[1] for f in files], [".CR2", ".JPG"])
         self.assertEqual(os.path.splitext(files[0])[0], os.path.splitext(files[1])[0])   # gleicher Name
 
+    # ---------- Live-Stack und Bibliothek (laufen zuletzt: „9a“ > „9_“)
+    def wait_master(self, timeout=60):
+        self.assertTrue(wait_for(lambda: self.st.master_job and not self.st.master_job["active"], timeout),
+                        "\n".join(self.logs[-12:]))
+        job = self.st.master_job
+        self.assertIsNone(job["error"], "\n".join(self.logs[-12:]))
+        return job["results"]
+
+    @unittest.skipUnless(studio.imaging.missing() is None, "braucht numpy und rawpy (venv)")
+    def test_9a_darks_mit_master_dann_live_stack(self):
+        st, cam = self.st, self.cam
+        cam.args.raw, cam.args.sky_speed, cam.focus = True, 120.0, 0
+        st.act_set({"prop": "iso", "value": 0x70})
+        st.act_set({"prop": "aperture", "value": 0x10})             # f/1.4: genug Sterne in 1 s
+        try:
+            cam.cap, cam.ambient = True, 22.0                         # Darks: Deckel drauf, warm
+            s = self.run_series(type="dark", target="Stack", count=3, exposure=1, pause=0, master=True)
+            self.assertEqual((s["download"], s["master"]), ("raw", True))
+            dark = self.wait_master()[0]
+            self.assertEqual((dark["kind"], dark["iso"], dark["n"], dark["exposure"]), ("dark", 3200, 3, 1.0))
+            self.assertAlmostEqual(dark["temp"], 22, delta=1)
+            self.assertEqual(len([f for f in os.listdir(s["folder"]) if f.endswith(".CR2")]), 3)
+
+            cam.cap, cam.ambient = False, 16.0                         # Lights: Deckel ab, kälter
+            st.act_live_start({"target": "Stack"})
+            with self.assertRaises(studio.CameraError):
+                st.act_live_start({})                                   # läuft schon
+            self.run_series(type="light", target="Stack", count=3, exposure=1, pause=0, download="raw")
+            live = st.live
+            self.assertTrue(wait_for(lambda: live.status()["frames"] + live.status()["rejected"] >= 3
+                                     and not live.status()["busy"], 30))
+            info = live.status()
+            self.assertEqual((info["frames"], info["kind"]), (3, "raw"), info["history"])
+            self.assertEqual(info["calib"]["dark"], dark["name"])      # automatisch gewählt
+            self.assertTrue(all("k" in h for h in info["history"]))
+            self.assertEqual(st.last_light["iso"], 3200)
+            st.act_live_stop({})
+            self.assertTrue(wait_for(lambda: live.status()["done"], 20))
+            self.assertTrue(live.saved and os.path.isfile(live.saved[0]))
+            self.assertTrue(os.path.isfile(live.saved[0][:-4] + ".fits"))
+        finally:
+            cam.args.raw, cam.args.sky_speed, cam.cap, cam.ambient = False, 1.0, False, 10.0
+
+    @unittest.skipUnless(studio.imaging.missing() is None, "braucht numpy und rawpy (venv)")
+    def test_9b_bias_master_und_master_aus_ordner(self):
+        st, cam = self.st, self.cam
+        cam.set_mode("M")
+        self.assertTrue(wait_for(lambda: not st.is_bulb_mode() and st.avail.get(studio.P_SHUTTER), 5))
+        cam.args.raw, cam.cap = True, True
+        try:
+            s = self.run_series(type="bias", target="Stack", count=3, pause=0, master=True)
+            bias = self.wait_master()[0]
+            self.assertEqual((bias["kind"], bias["iso"], bias["n"]), ("bias", 3200, 3))
+            self.assertTrue(bias["name"].startswith("MASTER-BIAS_ISO3200_"))
+            # Master noch einmal aus dem Ordner der Darks (z. B. von der Karte kopiert)
+            st.act_library_build({"session": os.path.basename(s["session"]), "kind": "dark"})
+            dark = self.wait_master()[0]
+            self.assertEqual((dark["kind"], dark["n"]), ("dark", 3))
+            info = st.library_info()
+            self.assertGreaterEqual(len(info["masters"]), 2)
+            self.assertTrue(any(src["dark"] >= 3 for src in info["sources"]))
+            st.act_library_delete({"id": dark["id"]})
+            self.assertIsNone(st.library.get(dark["id"]))
+        finally:
+            cam.args.raw, cam.cap = False, False
+            cam.set_mode("B")
+            self.assertTrue(wait_for(lambda: st.is_bulb_mode(), 5))
+
 
 if __name__ == "__main__":
     unittest.main()
