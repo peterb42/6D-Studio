@@ -168,6 +168,71 @@ class TestStudioMitSimulator(unittest.TestCase):
         self.server.drop()                                         # WLAN-Abbruch
         self.assertTrue(wait_for(lambda: not st.connected, 5))
         self.assertTrue(wait_for(lambda: st.connected, 15), "\n".join(self.logs[-10:]))
+        self.assertTrue(wait_for(lambda: studio.P_AEMODE in st.props, 5))
+
+    # ---------- Serien für Stacking
+    def run_series(self, timeout=60, **body):
+        self.st.act_series_start(body)
+        self.assertTrue(wait_for(lambda: not self.st.series_active(), timeout), "\n".join(self.logs[-12:]))
+        self.assertTrue(wait_for(lambda: self.st.downloads.empty() and not self.st.downloading, 30))
+        time.sleep(0.3)
+        return self.st.series
+
+    def csv_rows(self, s):
+        import csv
+        with open(os.path.join(os.path.dirname(s["folder"]), "serie.csv"), encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+
+    def test_8_serie_lights_mit_download(self):
+        s = self.run_series(type="light", target="Milchstraße", count=3, exposure=1, pause=0.2, download=True)
+        self.assertEqual((s["done"], s["error"]), (3, None))
+        self.assertTrue(s["folder"].endswith("_Milchstrasse/lights"))
+        files = sorted(os.listdir(s["folder"]))
+        self.assertEqual(len(files), 3, files)
+        for i, name in enumerate(files, s["first"]):
+            self.assertRegex(name, r"^LIGHT_Milchstrasse_\d{8}-\d{6}_ISO\d+_1s_f[\d.]+_%04d\.JPG$" % i)
+        rows = [r for r in self.csv_rows(s) if r["typ"] == "Light"]
+        self.assertEqual([r["geladen"] for r in rows[-3:]], ["ja"] * 3)
+        self.assertAlmostEqual(float(rows[-1]["belichtung_ist_s"]), 1.0, delta=0.5)
+
+    def test_9_serie_bias_im_modus_m(self):
+        st, cam = self.st, self.cam
+        cam.set_mode("M")
+        self.assertTrue(wait_for(lambda: not st.is_bulb_mode() and st.avail.get(studio.P_SHUTTER), 5))
+        try:
+            s = self.run_series(type="bias", target="Milchstraße", count=3, pause=0, download=False)
+            self.assertEqual(s["done"], 3)
+            self.assertEqual(cam.props[sim.P_SHUTTER], max(sim.SHUTTER_CODES))     # kürzeste Zeit gestellt
+            self.assertEqual(os.listdir(s["folder"]), [])                           # bleibt auf der Karte
+            rows = [r for r in self.csv_rows(s) if r["typ"] == "Bias"]
+            self.assertEqual(len(rows), 3)
+            self.assertTrue(all(r["geladen"].startswith("nein") and r["kameradatei"].startswith("IMG_")
+                                for r in rows))
+            self.assertTrue(all("_1-4000s_" in r["datei"] for r in rows))
+        finally:
+            cam.set_mode("B")
+            self.assertTrue(wait_for(lambda: st.is_bulb_mode(), 5))
+
+    def test_10_serie_stopp_nach_diesem_bild(self):
+        st = self.st
+        st.act_series_start({"type": "dark", "target": "Test", "count": 5, "exposure": 2, "pause": 0,
+                             "download": False})
+        self.assertTrue(wait_for(lambda: st.series["phase"] == "belichtet", 5))
+        with self.assertRaises(studio.CameraError):
+            st.act_bulb_start({})                                   # Bulb-Knopf gesperrt während der Serie
+        st.act_series_stop({})
+        self.assertTrue(wait_for(lambda: not st.series_active(), 15))
+        self.assertEqual(st.series["done"], 1)
+
+    def test_11_serie_raw_und_jpeg(self):
+        self.cam.args.raw = True
+        try:
+            s = self.run_series(type="light", target="Orion", count=1, exposure=1, pause=0, download=True)
+        finally:
+            self.cam.args.raw = False
+        files = sorted(os.listdir(s["folder"]))
+        self.assertEqual([os.path.splitext(f)[1] for f in files], [".CR2", ".JPG"])
+        self.assertEqual(os.path.splitext(files[0])[0], os.path.splitext(files[1])[0])   # gleicher Name
 
 
 if __name__ == "__main__":

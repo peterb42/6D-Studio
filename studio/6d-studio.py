@@ -53,6 +53,10 @@ OUT = os.path.expanduser(os.environ.get("OUT", "~/Pictures/6D-Tethering"))
 PREVIEW_DIR = os.path.join(OUT, ".vorschau")
 HERE = os.path.dirname(os.path.realpath(__file__))
 INDEX_HTML = os.path.join(HERE, "6d-studio.html")
+ASTRO_DIR = os.path.join(OUT, "Astro")              # Serien für Stacking (siehe astro.py)
+
+sys.path.insert(0, HERE)                            # -I lässt den Skriptordner sonst weg
+import astro  # noqa: E402
 
 # ---------------------------------------------------------------- Protokoll-Konstanten
 INIT_CMD_REQ, INIT_CMD_ACK, INIT_EVT_REQ, INIT_EVT_ACK, INIT_FAIL = 1, 2, 3, 4, 5
@@ -61,7 +65,9 @@ PROBE_REQ, PROBE_RESP = 13, 14
 PROBE_RESP_PKT = struct.pack("<II", 8, PROBE_RESP)
 
 GET_DEVICE_INFO, OPEN_SESSION, CLOSE_SESSION = 0x1001, 0x1002, 0x1003
-GET_OBJECT_INFO, GET_OBJECT = 0x1008, 0x1009
+GET_OBJECT_INFO, GET_OBJECT, GET_PARTIAL_OBJECT = 0x1008, 0x1009, 0x101B
+DOWNLOAD_CHUNK = 256 * 1024          # Download in Stücken: Bulb-Befehle kommen dazwischen dran
+SERIES_FILE_GRACE = 0.8              # nach dem ersten Bild kurz warten (RAW+JPEG = zwei Dateien)
 REMOTE_RELEASE, SET_PROP, SET_REMOTE_MODE, SET_EVENT_MODE, GET_EVENT = 0x910F, 0x9110, 0x9114, 0x9115, 0x9116
 TRANSFER_COMPLETE, BULB_START, BULB_END, RELEASE_ON, RELEASE_OFF = 0x9117, 0x9125, 0x9126, 0x9128, 0x9129
 GET_VF_DATA, DRIVE_LENS, ZOOM, ZOOM_POSITION = 0x9153, 0x9155, 0x9158, 0x9159
@@ -129,6 +135,13 @@ def fmt_shutter(v):
         return "Auto"
     t = _nearest(T_NOMINAL, 2 ** (-(v - 0x38) / 8))
     return ('%g"' % t) if t >= 0.3 else "1/%d" % round(1 / t)
+
+
+def shutter_seconds(v):
+    """Nominelle Belichtungszeit in Sekunden (wie auf der Kamera angezeigt), None bei Bulb/Auto."""
+    if v is None or v in (0, SHUTTER_BULB) or v > 0xA0:
+        return None
+    return _nearest(T_NOMINAL, 2 ** (-(v - 0x38) / 8))
 
 
 def fmt_duration(s):
@@ -281,7 +294,7 @@ class Op:
 class Studio:
     def __init__(self):
         self.lock = threading.RLock()
-        self.ops = queue.Queue()
+        self.ops = collections.deque()      # Befehle aus anderen Threads; vorne = Vorrang
         self.wake_r, self.wake_w = socket.socketpair()
         self.logs = collections.deque(maxlen=80)
         self.connected = False
@@ -307,6 +320,9 @@ class Studio:
         self.downloads = queue.Queue()
         self.downloading = None
         self.photos = collections.deque(maxlen=24)
+        # Serie für Stacking
+        self.series = None                  # Zustand der laufenden/letzten Serie
+        self.pending_frame = None           # Bild der Serie, dem neue Kameradateien zugeordnet werden
         # Verbindung
         self.cam_cmd = self.cam_evt = None
         self.cli_cmd = self.cli_evt = None
@@ -416,20 +432,22 @@ class Studio:
             self.bulb = None
             if self.bulb_timer:
                 self.bulb_timer.cancel()
-        while True:
-            try:
-                pending.append(self.ops.get_nowait())
-            except queue.Empty:
-                break
+        while self.ops:
+            pending.append(self.ops.popleft())
         for op in pending:
             op.done.set()
 
     # ---------- Befehle aus anderen Threads
-    def submit(self, code, params=(), data=None, timeout=15, name=None):
+    def submit(self, code, params=(), data=None, timeout=15, name=None, priority=False):
+        """Befehl an die Kamera und auf die Antwort warten. priority: vor wartende Befehle stellen
+        (Bulb Start/Stopp sollen nicht hinter einem Download-Stück warten)."""
         if not self.connected:
             raise CameraError("Kamera nicht verbunden")
         op = Op(code, params, data, timeout, name=name)
-        self.ops.put(op)
+        if priority:
+            self.ops.appendleft(op)
+        else:
+            self.ops.append(op)
         self.wake_w.send(b"x")
         if not op.done.wait(timeout + 10):
             raise CameraError("Zeitüberschreitung bei „%s“" % op.name)
@@ -565,11 +583,9 @@ class Studio:
         if self.internal_queue:
             self.send_op(self.internal_queue.pop(0))
             return
-        try:
-            self.send_op(self.ops.get_nowait())
+        if self.ops:
+            self.send_op(self.ops.popleft())
             return
-        except queue.Empty:
-            pass
         now = time.time()
         if KEEP_DEVICE_ON in self.supported and now - self.last_keepon > 60:
             # vorsorglich jede Minute – damit die Abschaltautomatik nie zuschlägt
@@ -709,8 +725,11 @@ class Studio:
                         self.internal_queue.append(Op(SET_PROP, data=data, name="Speicherort Karte"))
                         self.log("Speicherort auf Speicherkarte gestellt.")
         for handle, transfer in new_objects:
-            if transfer or self.autodownload:
-                self.downloads.put((handle, transfer))
+            frame = self.pending_frame                   # gehört das Bild zu einer laufenden Serie?
+            if frame is not None:
+                frame["handles"].append(handle)
+            if frame is not None or transfer or self.autodownload:
+                self.downloads.put((handle, transfer, frame))
 
     def on_frame(self, op):
         if op.rc == RC_OK and op.result:
@@ -808,22 +827,29 @@ class Studio:
             raise CameraError("Fokusantrieb nicht möglich (%s) – Schalter am Objektiv auf AF stellen"
                               % rc_text(op.effective_rc()))
 
+    def series_active(self):
+        return bool(self.series and self.series["active"])
+
     def act_bulb_start(self, body):
-        seconds = max(0, int(float(body.get("seconds") or 0)))
+        if self.series_active():
+            raise CameraError("Es läuft eine Serie – dort stoppen")
+        self.bulb_start(max(0, int(float(body.get("seconds") or 0))))
+
+    def bulb_start(self, seconds=0, quiet=False):
         with self.lock:
             if self.bulb:
                 raise CameraError("Es läuft bereits eine Belichtung")
         if self.props and not self.is_bulb_mode():
             raise CameraError("Für Bulb das Moduswahlrad der Kamera auf B stellen")
         if BULB_START in self.supported:
-            method, op = "bulb", self.submit(BULB_START, name="Bulb Start", timeout=20)
+            method, op = "bulb", self.submit(BULB_START, name="Bulb Start", timeout=20, priority=True)
         elif RELEASE_ON in self.supported:
-            method, op = "release", self.submit(RELEASE_ON, (3, 0), name="Bulb Start", timeout=20)
+            method, op = "release", self.submit(RELEASE_ON, (3, 0), name="Bulb Start", timeout=20, priority=True)
         else:
             raise CameraError("Kamera unterstützt keinen Bulb-Start über WLAN")
         rc = op.effective_rc()
         if rc != RC_OK and method == "bulb" and RELEASE_ON in self.supported:
-            method, op = "release", self.submit(RELEASE_ON, (3, 0), name="Bulb Start", timeout=20)
+            method, op = "release", self.submit(RELEASE_ON, (3, 0), name="Bulb Start", timeout=20, priority=True)
             rc = op.effective_rc()
         if rc != RC_OK:
             raise CameraError("Belichtung startet nicht: %s" % rc_text(rc))
@@ -833,15 +859,23 @@ class Studio:
                 self.bulb_timer = threading.Timer(seconds, self._bulb_autostop)
                 self.bulb_timer.daemon = True
                 self.bulb_timer.start()
-        self.log("● Bulb-Belichtung gestartet" + (" – Auto-Stopp nach %s" % fmt_duration(seconds) if seconds else ""))
+        if not quiet:
+            self.log("● Bulb-Belichtung gestartet"
+                     + (" – Auto-Stopp nach %s" % fmt_duration(seconds) if seconds else ""))
 
     def _bulb_autostop(self):
         try:
-            self.act_bulb_stop({})
+            self.bulb_stop()
         except CameraError as e:
             self.log("❌ Auto-Stopp:", e)
 
     def act_bulb_stop(self, body):
+        if self.series_active():
+            raise CameraError("Es läuft eine Serie – dort stoppen")
+        self.bulb_stop()
+
+    def bulb_stop(self, quiet=False):
+        """Beendet die Bulb-Belichtung und gibt die tatsächliche Belichtungszeit zurück."""
         with self.lock:
             b = self.bulb
             if not b:
@@ -850,32 +884,165 @@ class Studio:
                 self.bulb_timer.cancel()
                 self.bulb_timer = None
         if b["method"] == "bulb":
-            op = self.submit(BULB_END, name="Bulb Stopp", timeout=30)
+            op = self.submit(BULB_END, name="Bulb Stopp", timeout=30, priority=True)
         else:
-            op = self.submit(RELEASE_OFF, (3,), name="Bulb Stopp", timeout=30)
+            op = self.submit(RELEASE_OFF, (3,), name="Bulb Stopp", timeout=30, priority=True)
         rc = op.effective_rc()
         if rc != RC_OK:
             raise CameraError("Stopp fehlgeschlagen: %s – bitte erneut drücken" % rc_text(rc))
+        duration = time.time() - b["start"]
         with self.lock:
             self.bulb = None
-        self.log("■ Belichtung beendet nach %s" % fmt_duration(time.time() - b["start"]))
+        if not quiet:
+            self.log("■ Belichtung beendet nach %s" % fmt_duration(duration))
+        return duration
 
     def act_shoot(self, body):
+        if self.series_active():
+            raise CameraError("Es läuft eine Serie – dort stoppen")
+        self.shoot()
+
+    def shoot(self, quiet=False):
         if self.is_bulb_mode():
             raise CameraError("Im Modus B bitte Bulb Start/Stopp verwenden")
         if REMOTE_RELEASE in self.supported:
-            op = self.submit(REMOTE_RELEASE, name="Auslösen", timeout=60)
+            op = self.submit(REMOTE_RELEASE, name="Auslösen", timeout=60, priority=True)
             rc = op.effective_rc()
             if rc == RC_OK and op.rparams and op.rparams[0] not in (0,):
                 raise CameraError("Kamera hat nicht ausgelöst (Code %d) – bei Nacht Objektiv auf MF stellen"
                                   % op.rparams[0])
         else:
-            op = self.submit(RELEASE_ON, (3, 0), name="Auslösen", timeout=60)
+            op = self.submit(RELEASE_ON, (3, 0), name="Auslösen", timeout=60, priority=True)
             rc = op.effective_rc()
-            self.submit(RELEASE_OFF, (3,), name="Auslösen loslassen", timeout=60)
+            self.submit(RELEASE_OFF, (3,), name="Auslösen loslassen", timeout=60, priority=True)
         if rc != RC_OK:
             raise CameraError("Auslösen fehlgeschlagen: %s" % rc_text(rc))
-        self.log("📷 Ausgelöst")
+        if not quiet:
+            self.log("📷 Ausgelöst")
+
+    # ---------- Serie für Stacking
+    def act_series_start(self, body):
+        """Startet eine Serie gleichartiger Bilder (Light/Dark/Bias/Flat/Dark-Flat) – siehe astro.py."""
+        if not self.connected:
+            raise CameraError("Kamera nicht verbunden")
+        with self.lock:
+            if self.series_active():
+                raise CameraError("Es läuft bereits eine Serie")
+            if self.bulb:
+                raise CameraError("Es läuft gerade eine Belichtung")
+        ftype = body.get("type", "light")
+        if ftype not in astro.FRAME_TYPES:
+            raise CameraError("Unbekannter Bildtyp")
+        label = astro.FRAME_TYPES[ftype]["label"]
+        count = int(body.get("count") or 1)
+        if not 1 <= count <= 999:
+            raise CameraError("Anzahl 1 bis 999")
+        pause = clamp(float(body.get("pause") or 0), 0, 600)
+        bulb = self.is_bulb_mode()
+        exposure = float(body.get("exposure") or 0) if bulb else None
+        if bulb and ftype in ("bias", "flat", "darkflat"):
+            raise CameraError("%s: Moduswahlrad auf %s stellen" % (label, "Av" if ftype == "flat" else "M"))
+        if bulb and exposure <= 0:
+            raise CameraError("Belichtungszeit für Bulb angeben")
+        if ftype == "bias":                                          # kürzeste Zeit einstellen
+            fastest = max(self.avail.get(P_SHUTTER) or [0])
+            if fastest and self.props.get(P_SHUTTER) != fastest:
+                self.set_prop(P_SHUTTER, fastest, name="Belichtungszeit")
+                self.log("Bias: Belichtungszeit → %s" % fmt_shutter(fastest))
+                end = time.time() + 5                  # bis die Kamera den neuen Wert meldet (für den Dateinamen)
+                while self.props.get(P_SHUTTER) != fastest and time.time() < end:
+                    time.sleep(0.05)
+        now = time.time()
+        target = astro.safe_name(body.get("target"))
+        session = astro.session_dir(ASTRO_DIR, target, now)
+        folder = os.path.join(session, astro.FRAME_TYPES[ftype]["folder"])
+        os.makedirs(folder, exist_ok=True)
+        with self.lock:
+            self.series = {
+                "active": True, "type": ftype, "label": label, "target": target, "count": count,
+                "exposure": exposure, "pause": pause, "bulb": bulb,
+                "download": bool(body.get("download", ftype == "light")),
+                "session": session, "folder": folder, "first": astro.next_index(folder, ftype),
+                "done": 0, "index": 0, "phase": "startet", "phase_end": None, "started": now,
+                "stop": 0, "error": None, "last": None,
+            }
+        self.log("▶︎ Serie: %d × %s (%s) → %s" % (
+            count, label, fmt_duration(exposure) if bulb else "Kamerazeit " + fmt_shutter(self.props.get(P_SHUTTER)),
+            folder.replace(os.path.expanduser("~"), "~")))
+        threading.Thread(target=self.series_thread, daemon=True).start()
+
+    def act_series_stop(self, body):
+        s = self.series
+        if not s or not s["active"]:
+            raise CameraError("Es läuft keine Serie")
+        s["stop"] = 2 if body.get("now") else max(s["stop"], 1)
+        self.log("Serie wird %s beendet" % ("sofort" if s["stop"] == 2 else "nach diesem Bild"))
+
+    def _series_wait(self, s, phase, seconds, stop_level):
+        """Warten mit Anzeige; endet früher, wenn die Serie mit mindestens stop_level gestoppt wird."""
+        s["phase"], s["phase_end"] = phase, time.time() + seconds
+        while time.time() < s["phase_end"] and s["stop"] < stop_level and self.connected:
+            time.sleep(0.05)
+        s["phase_end"] = None
+
+    def series_thread(self):
+        s = self.series
+        try:
+            for n in range(s["count"]):
+                if s["stop"]:
+                    break
+                self.series_frame(s, s["first"] + n)
+                s["done"] += 1
+                if n < s["count"] - 1 and s["pause"] and not s["stop"]:
+                    self._series_wait(s, "Pause", s["pause"], stop_level=1)
+        except CameraError as e:
+            s["error"] = str(e)
+            self.log("❌ Serie abgebrochen:", e)
+        finally:
+            with self.lock:
+                self.pending_frame = None
+                s["active"], s["phase"], s["phase_end"] = False, "fertig", None
+            self.log("■ Serie %s: %d von %d Bildern" % (s["label"], s["done"], s["count"]))
+
+    def series_frame(self, s, index):
+        start = time.time()
+        with self.lock:
+            p = dict(self.props)
+        shutter = p.get(P_SHUTTER)
+        planned = s["exposure"] if s["bulb"] else shutter_seconds(shutter)
+        frame = {
+            "base": astro.frame_name(s["type"], s["target"], start, fmt_iso(p.get(P_ISO)), planned,
+                                     fmt_aperture(p.get(P_APERTURE)), index),
+            "type": s["type"], "index": index, "session": s["session"], "folder": s["folder"],
+            "download": s["download"], "start": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start)),
+            "planned": planned, "exposure": None, "iso": fmt_iso(p.get(P_ISO)),
+            "aperture": fmt_aperture(p.get(P_APERTURE)), "shutter": fmt_shutter(shutter),
+            "mode": AE_MODES.get(p.get(P_AEMODE), "?"), "handles": [],
+        }
+        with self.lock:
+            self.pending_frame = frame
+            s["index"], s["last"] = index - s["first"] + 1, frame["base"]
+        if s["bulb"]:
+            self.bulb_start(quiet=True)
+            self._series_wait(s, "belichtet", planned, stop_level=2)
+            frame["exposure"] = round(self.bulb_stop(quiet=True), 2)
+        else:
+            self.shoot(quiet=True)
+            frame["exposure"] = planned or None
+            if planned:
+                self._series_wait(s, "belichtet", planned, stop_level=2)
+        # Warten, bis die Kamera das Bild meldet – erst dann kommt das nächste (Zuordnung der Dateien).
+        s["phase"] = "speichert"
+        deadline = time.time() + 30 + (planned or 0)
+        while not frame["handles"] and time.time() < deadline and self.connected:
+            time.sleep(0.05)
+        if frame["handles"]:
+            time.sleep(SERIES_FILE_GRACE)
+            self.log("● %s %d/%d: %s" % (s["label"], s["index"], s["count"], frame["base"]))
+        else:
+            self.log("⚠️ Kamera hat kein Bild für %s gemeldet" % frame["base"])
+        with self.lock:
+            self.pending_frame = None
 
     def act_autodownload(self, body):
         self.autodownload = bool(body.get("on"))
@@ -884,9 +1051,9 @@ class Studio:
     # ---------- Download
     def download_worker(self):
         while True:
-            handle, transfer = self.downloads.get()
+            handle, transfer, frame = self.downloads.get()
             try:
-                self.download(handle, transfer)
+                self.download(handle, transfer, frame)
             except CameraError as e:
                 self.log("❌ Download:", e)
             except Exception as e:
@@ -895,37 +1062,75 @@ class Studio:
                 with self.lock:
                     self.downloading = None
 
-    def download(self, handle, transfer):
+    def download(self, handle, transfer, frame=None):
         info = self.submit(GET_OBJECT_INFO, (handle,), name="Bildinfo", timeout=30)
         if info.rc != RC_OK or len(info.result) < 53:
             raise CameraError("Bildinfo nicht lesbar: %s" % rc_text(info.rc))
         size = struct.unpack_from("<I", info.result, 8)[0]
         name, _ = ptp_string(info.result, 52)
         name = os.path.basename(name) or "IMG_%08x" % handle
+        stem, ext = os.path.splitext(name)
+
+        if frame:                                    # Serienbild: Namenskonvention + Eintrag in serie.csv
+            path = os.path.join(frame["folder"], frame["base"] + ext)
+            load = frame["download"] or transfer     # „nur Computer“: muss geladen werden, sonst weg
+            row = {"typ": astro.FRAME_TYPES[frame["type"]]["label"], "nr": frame["index"],
+                   "datei": os.path.basename(path), "kameradatei": name,
+                   "ordner": astro.FRAME_TYPES[frame["type"]]["folder"], "start": frame["start"],
+                   "belichtung_geplant_s": frame["planned"] or "", "belichtung_ist_s": frame["exposure"] or "",
+                   "iso": frame["iso"], "blende": frame["aperture"], "zeit": frame["shutter"],
+                   "modus": frame["mode"], "geladen": "ja" if load else "nein (auf der Karte)"}
+            if not load:
+                astro.log_file(frame["session"], row)
+                return
+        else:
+            path = os.path.join(OUT, name)
+            if os.path.exists(path):
+                path = os.path.join(OUT, "%s_%s%s" % (stem, time.strftime("%H%M%S"), ext))
+
         with self.lock:
-            self.downloading = {"name": name, "total": size}
+            self.downloading = {"name": os.path.basename(path), "total": size, "got": 0}
         self.log("⬇︎ Lade %s (%.1f MB) …" % (name, size / 1e6))
         t0 = time.time()
-        op = self.submit(GET_OBJECT, (handle,), name="Download " + name, timeout=900)
-        if op.rc != RC_OK or not op.result:
-            raise CameraError("Download fehlgeschlagen: %s" % rc_text(op.rc))
+        data = self.fetch_object(handle, size, name)
         if transfer and TRANSFER_COMPLETE in self.supported:
             self.submit(TRANSFER_COMPLETE, (handle,), name="Übertragung fertig")
-        stem, ext = os.path.splitext(name)
-        path = os.path.join(OUT, name)
-        if os.path.exists(path):
-            path = os.path.join(OUT, "%s_%s%s" % (stem, time.strftime("%H%M%S"), ext))
         with open(path, "wb") as f:
-            f.write(op.result)
+            f.write(data)
+        if frame:
+            astro.log_file(frame["session"], row)
         dt = max(time.time() - t0, 0.1)
-        self.log("✔︎ Gespeichert: %s (%.1f MB/s)" % (os.path.basename(path), len(op.result) / 1e6 / dt))
+        self.log("✔︎ Gespeichert: %s (%.1f MB/s)" % (os.path.basename(path), len(data) / 1e6 / dt))
         preview = os.path.join(PREVIEW_DIR, os.path.basename(path) + ".jpg")
         subprocess.run(["sips", "-s", "format", "jpeg", "-Z", "1800", path, "--out", preview],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         with self.lock:
             self.photos.appendleft({"name": os.path.basename(path), "time": time.strftime("%H:%M:%S"),
-                                    "size": len(op.result),
+                                    "size": len(data),
                                     "preview": os.path.basename(preview) if os.path.exists(preview) else None})
+
+    def fetch_object(self, handle, size, name):
+        """Bild laden – in Stücken (GetPartialObject), damit Bulb-Befehle dazwischen drankommen.
+        Kann die Kamera das nicht, am Stück (GetObject)."""
+        if GET_PARTIAL_OBJECT in self.supported and size:
+            buf = bytearray()
+            while len(buf) < size:
+                op = self.submit(GET_PARTIAL_OBJECT, (handle, len(buf), min(DOWNLOAD_CHUNK, size - len(buf))),
+                                 name="Download " + name, timeout=60)
+                if op.rc != RC_OK or not op.result:
+                    if not buf:
+                        break                        # Stückweise geht nicht → am Stück versuchen
+                    raise CameraError("Download abgebrochen: %s" % rc_text(op.rc))
+                buf += op.result
+                with self.lock:
+                    if self.downloading:
+                        self.downloading["got"] = len(buf)
+            if len(buf) >= size:
+                return bytes(buf[:size])
+        op = self.submit(GET_OBJECT, (handle,), name="Download " + name, timeout=900)
+        if op.rc != RC_OK or not op.result:
+            raise CameraError("Download fehlgeschlagen: %s" % rc_text(op.rc))
+        return op.result
 
     # ---------- Zustand für die Oberfläche
     def snapshot(self):
@@ -939,7 +1144,11 @@ class Studio:
             dl = None
             if self.downloading:
                 got = len(inf["buf"]) if inf and inf.get("op") and inf["op"].code == GET_OBJECT else 0
-                dl = dict(self.downloading, got=got)
+                dl = dict(self.downloading, got=max(got, self.downloading.get("got", 0)))
+            series = None
+            if self.series:
+                series = {k: v for k, v in self.series.items() if k not in ("session",)}
+                series["folder"] = self.series["folder"].replace(os.path.expanduser("~"), "~")
             fps = 0.0
             if len(self.fps_times) >= 2 and time.time() - self.fps_times[-1] < 2:
                 fps = (len(self.fps_times) - 1) / max(self.fps_times[-1] - self.fps_times[0], 0.001)
@@ -954,6 +1163,7 @@ class Studio:
                              "can_focus": DRIVE_LENS in self.supported},
                 "bulb": dict(self.bulb, active=True, now=time.time()) if self.bulb else {"active": False},
                 "autodownload": self.autodownload, "downloading": dl, "photos": list(self.photos),
+                "series": series, "now": time.time(),
                 "out": OUT, "log": list(self.logs)[-40:],
             }
 
@@ -964,7 +1174,8 @@ class Handler(BaseHTTPRequestHandler):
     ACTIONS = {"/api/set": "act_set", "/api/liveview": "act_liveview", "/api/zoom": "act_zoom",
                "/api/zoommove": "act_zoommove", "/api/focus": "act_focus", "/api/bulb/start": "act_bulb_start",
                "/api/bulb/stop": "act_bulb_stop", "/api/shoot": "act_shoot",
-               "/api/autodownload": "act_autodownload"}
+               "/api/autodownload": "act_autodownload",
+               "/api/series/start": "act_series_start", "/api/series/stop": "act_series_stop"}
 
     def log_message(self, *a):
         pass

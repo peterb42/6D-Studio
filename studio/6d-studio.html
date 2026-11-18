@@ -78,6 +78,13 @@ select:disabled{opacity:.45}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .chip{padding:4px 10px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);cursor:pointer;font-size:12px}
 .chip.on{border-color:var(--accent);color:#fff;background:#1f3357}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#0a0c10;font-weight:650}
+#seriesCard input[type=text],#seriesCard input[type=number]{background:var(--panel2);border:1px solid var(--line);
+  border-radius:7px;padding:6px 8px;width:100%}
+#seriesCard .inline{display:flex;align-items:center;gap:6px;color:var(--muted)}
+#seriesCard .inline input[type=number]{width:64px}
+.sline{font-variant-numeric:tabular-nums;font-weight:650;margin-top:12px}
+#sBar>div{background:var(--accent)}
 .photo img.main{width:100%;border-radius:8px;border:1px solid var(--line);display:block;background:#000}
 .thumbs{display:flex;gap:6px;margin-top:8px;overflow-x:auto}
 .thumbs img{height:46px;border-radius:5px;border:1px solid var(--line);cursor:pointer}
@@ -187,6 +194,39 @@ body.night #red{display:block}
       <div class="note" id="bulbNote"></div>
       <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
         <button class="btn" id="shootBtn">Auslösen</button><span class="hint">für normale Zeiten (nicht im Modus B)</span>
+      </div>
+    </section>
+
+    <section class="card" id="seriesCard">
+      <h2>Serie für Stacking</h2>
+      <div class="field"><label for="sType">Bildtyp</label>
+        <select id="sType">
+          <option value="light">Light – das Motiv</option>
+          <option value="dark">Dark – Deckel drauf</option>
+          <option value="bias">Bias – kürzeste Zeit</option>
+          <option value="flat">Flat – gleichmäßig hell</option>
+          <option value="darkflat">Dark-Flat</option>
+        </select></div>
+      <div class="field"><label for="sTarget">Objekt</label>
+        <input type="text" id="sTarget" placeholder="z. B. Milchstraße" maxlength="40"></div>
+      <div class="field"><label for="sCount">Anzahl</label>
+        <span class="inline"><input type="number" id="sCount" min="1" max="999" value="20"> Bilder</span></div>
+      <div class="field" id="sExpRow"><label>Belichtung</label>
+        <span class="inline"><input type="number" id="sExpMin" min="0" max="999" value="0"> min
+          <input type="number" id="sExpSec" min="0" max="59" value="30"> s</span></div>
+      <div class="field" id="sCamRow" hidden><label>Belichtung</label><span class="hint" id="sCamTime"></span></div>
+      <div class="field"><label for="sPause">Pause</label>
+        <span class="inline"><input type="number" id="sPause" min="0" max="600" step="0.5" value="3"> s dazwischen</span></div>
+      <label class="toggle"><input type="checkbox" id="sDownload"> Bilder während der Serie auf den Mac laden</label>
+      <div class="note" id="sHint"></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+        <button class="btn primary" id="sStart">Serie starten</button>
+        <button class="btn" id="sStop" hidden>Nach diesem Bild stoppen</button>
+      </div>
+      <div id="sProgress" hidden>
+        <div class="sline" id="sLine"></div>
+        <div class="bar" id="sBar"><div></div></div>
+        <div class="hint" id="sSub" style="margin-top:6px"></div>
       </div>
     </section>
 
@@ -310,14 +350,16 @@ function render() {
   placeMarker();
 
   // Bulb
-  if (b.active) clockOffset = b.now - Date.now() / 1000;
+  clockOffset = S.now - Date.now() / 1000;
   if (b.active) lastBulb = b;
+  const seriesOn = !!(S.series && S.series.active);
   const bb = $('#bulbBtn');
   bb.textContent = b.active ? 'Stopp' : 'Start';
   bb.classList.toggle('stop', b.active);
-  bb.disabled = !b.active && (!S.connected || !S.bulb_mode);
+  bb.disabled = seriesOn || (!b.active && (!S.connected || !S.bulb_mode));
   $('#bulbNote').textContent = S.connected && !S.bulb_mode && !b.active ? 'Für Bulb das Moduswahlrad der Kamera auf B stellen.' : '';
-  $('#shootBtn').disabled = !S.connected || S.bulb_mode || b.active;
+  $('#shootBtn').disabled = !S.connected || S.bulb_mode || b.active || seriesOn;
+  renderSeries();
 
   // Fotos
   const ph = S.photos;
@@ -350,7 +392,8 @@ function tick() {
   if (b && b.active) {
     const el = Date.now() / 1000 + clockOffset - b.start;
     $('#tval').textContent = fmt(el);
-    $('#tsub').textContent = b.planned ? `noch ${fmt(b.planned - el)} von ${fmt(b.planned)}` : 'läuft – zum Beenden Stopp drücken';
+    $('#tsub').textContent = S.series && S.series.active ? 'Belichtung der Serie'
+      : b.planned ? `noch ${fmt(b.planned - el)} von ${fmt(b.planned)}` : 'läuft – zum Beenden Stopp drücken';
     bar.hidden = !b.planned;
     if (b.planned) bar.firstElementChild.style.width = Math.min(100, el / b.planned * 100) + '%';
   } else {
@@ -358,8 +401,96 @@ function tick() {
     if (lastBulb && S && S.connected) $('#tsub').textContent = 'zuletzt belichtet';
     else { $('#tval').textContent = '0:00'; $('#tsub').textContent = 'bereit'; }
   }
+  tickSeries();
 }
 setInterval(tick, 200);
+
+// ---------------------------------------------------------------- Serie für Stacking
+const S_HINTS = {
+  light: 'Das Motiv. Moduswahlrad B (Zeit hier eingeben) oder M (Zeit der Kamera). ISO, Blende und Fokus ' +
+         'für alle Lights gleich lassen.',
+  dark: 'Objektivdeckel drauf und Sucher abdecken! Gleiche ISO und Belichtungszeit wie die Lights, am besten ' +
+        'direkt danach (gleiche Temperatur). 15–30 Bilder.',
+  bias: 'Moduswahlrad M – das Studio stellt die kürzeste Zeit (1/4000) ein. Deckel drauf, gleiche ISO wie die ' +
+        'Lights. 30–50 Bilder, gern auch tagsüber.',
+  flat: 'Moduswahlrad Av. Fokus und Blende wie bei den Lights NICHT verändern! Gleichmäßig hell: weißes T-Shirt ' +
+        'vor dem Objektiv + Tablet-Bildschirm oder Dämmerungshimmel. ISO 100–400, 20–30 Bilder.',
+  darkflat: 'Moduswahlrad M mit der Zeit der Flats, Deckel drauf. Bei der 6D meist durch Bias ersetzbar.',
+};
+const S_COUNT = {light: 20, dark: 20, bias: 40, flat: 25, darkflat: 25};
+const S_FIELDS = ['sType', 'sTarget', 'sCount', 'sExpMin', 'sExpSec', 'sPause', 'sDownload'];
+
+function seriesBody() {
+  return {
+    type: $('#sType').value, target: $('#sTarget').value.trim(),
+    count: +$('#sCount').value || 1, pause: +$('#sPause').value || 0, download: $('#sDownload').checked,
+    exposure: (+$('#sExpMin').value || 0) * 60 + (+$('#sExpSec').value || 0),
+  };
+}
+function saveSeriesForm() {
+  for (const id of S_FIELDS) store.set('s.' + id, $('#' + id).type === 'checkbox' ? $('#' + id).checked : $('#' + id).value);
+}
+function loadSeriesForm() {
+  for (const id of S_FIELDS) {
+    const v = store.get('s.' + id, null);
+    if (v === null) continue;
+    if ($('#' + id).type === 'checkbox') $('#' + id).checked = v; else $('#' + id).value = v;
+  }
+  if (store.get('s.sDownload', null) === null) $('#sDownload').checked = $('#sType').value === 'light';
+}
+
+function renderSeries() {
+  const s = S.series, active = !!(s && s.active), type = $('#sType').value;
+  S_FIELDS.forEach(id => $('#' + id).disabled = active);
+  $('#sStart').hidden = active;
+  $('#sStart').disabled = !S.connected || S.bulb.active;
+  $('#sStop').hidden = !active;
+  $('#sStop').textContent = active && s.stop ? 'Sofort abbrechen' : 'Nach diesem Bild stoppen';
+  const bulbExp = S.bulb_mode && (type === 'light' || type === 'dark');
+  $('#sExpRow').hidden = !bulbExp;
+  $('#sCamRow').hidden = bulbExp;
+  $('#sCamTime').textContent = !S.connected ? '–'
+    : S.bulb_mode ? `Moduswahlrad auf ${type === 'flat' ? 'Av' : 'M'} stellen`
+    : type === 'bias' ? 'kürzeste Zeit (stellt das Studio ein)'
+    : `Zeit der Kamera: ${S.shutter.label}`;
+  $('#sHint').textContent = S_HINTS[type];
+  $('#sProgress').hidden = !s;
+  if (!s) return;
+  const per = (s.exposure || 0) + s.pause + 2.5;
+  $('#sBar').firstElementChild.style.width = (s.done / s.count * 100) + '%';
+  $('#sSub').textContent = `${s.folder}` + (active ? ` · Rest ≈ ${fmt((s.count - s.done) * per)}` : '');
+  if (!active) {
+    $('#sLine').textContent = s.error ? `Abgebrochen: ${s.error}`
+      : `Fertig: ${s.done} von ${s.count} ${s.label}${s.done === 1 ? '' : 's'}`;
+  }
+}
+function tickSeries() {
+  const s = S && S.series;
+  if (!s || !s.active) return;
+  let t = `${s.label} ${s.index} / ${s.count} · ${s.phase}`;
+  if (s.phase_end) t += ` · noch ${fmt(s.phase_end - (Date.now() / 1000 + clockOffset))}`;
+  $('#sLine').textContent = t;
+}
+
+$('#sType').addEventListener('change', () => {
+  const type = $('#sType').value;
+  $('#sCount').value = S_COUNT[type];
+  $('#sDownload').checked = type === 'light';
+  saveSeriesForm();
+  if (S) renderSeries();
+});
+S_FIELDS.forEach(id => $('#' + id).addEventListener('change', saveSeriesForm));
+$('#sStart').onclick = async () => {
+  const body = seriesBody();
+  if (['dark', 'bias', 'darkflat'].includes(body.type) &&
+      !confirm('Objektivdeckel drauf und Sucher abgedeckt?')) return;
+  if (body.type === 'flat' && !confirm('Fokus und Blende unverändert wie bei den Lights – und eine gleichmäßig helle Fläche vor dem Objektiv?')) return;
+  saveSeriesForm();
+  $('#sStart').disabled = true;
+  await api('/api/series/start', body);
+};
+$('#sStop').onclick = () => api('/api/series/stop', {now: !!(S && S.series && S.series.stop)});
+loadSeriesForm();
 
 // ---------------------------------------------------------------- Livebild
 function contentRect() {

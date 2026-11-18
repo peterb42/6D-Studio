@@ -23,12 +23,17 @@ ISO/Blende/Zeit, automatischer RAW-Download.
 Die Oberfläche öffnet sich unter <http://127.0.0.1:8066>. Weitere Befehle: `6d-fernsteuerung` ohne Argument.
 Fotos landen in `~/Pictures/6D-Tethering`, das Protokoll in `~/.gphoto/6d-proxy.log`.
 
+**Serien für Stacking** (Lights, Darks, Bias, Flats, Dark-Flats) landen Siril-gerecht sortiert in
+`~/Pictures/6D-Tethering/Astro/<Nacht>_<Objekt>/{lights,darks,biases,flats,darkflats}/` mit `serie.csv` –
+Ablauf und Namenskonvention: [docs/stacking-und-kalibrierung.md](docs/stacking-und-kalibrierung.md).
+
 ## Projekt
 
 | Pfad | Inhalt |
 |---|---|
 | `studio/6d-studio.py` | Server: PTP/IP zur Kamera, Vermittler für gphoto2, Web-API |
 | `studio/6d-studio.html` | Bedienoberfläche (HTML/CSS/JS, keine Abhängigkeiten) |
+| `studio/astro.py` | Serien für Stacking: Bildtypen, Namenskonvention, `serie.csv` |
 | `bin/6d-fernsteuerung` | Kommandozeilen-Werkzeug (zsh) – startet/stoppt das Studio, gphoto2-Befehle |
 | `sim/sim6d.py` | **Simulierte 6D** – PTP/IP wie die echte Kamera, Sternenhimmel-Livebild, Bulb, Download |
 | `tools/ptpip-handshake.py` | Anmeldung/Kopplung direkt an der Kamera testen (90 s Wartezeit) |
@@ -37,6 +42,7 @@ Fotos landen in `~/Pictures/6D-Tethering`, das Protokoll in `~/.gphoto/6d-proxy.
 | `tools/legacy/` | Erster Vermittler, ersetzt durch `6d-studio` |
 | `tests/` | Tests ohne Kamera, auch Studio ↔ Simulator (`python3 -m unittest discover -s tests -v`, ~7 s) |
 | `docs/canon-6d-ptpip.md` | **Alles, was wir über das Protokoll der 6D herausgefunden haben** |
+| `docs/stacking-und-kalibrierung.md` | Serien, Namenskonvention, Ablauf für Lights/Darks/Bias/Flats, Live-Stacking-Vergleich und -Vorschlag |
 
 Nur Python-Standardbibliothek, läuft mit Python 3.9+ – auch mit dem System-Python (`/usr/bin/python3`).
 

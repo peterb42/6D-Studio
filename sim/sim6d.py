@@ -282,18 +282,24 @@ class Camera:
         buf = render(PHOTO_W, PHOTO_H, (0, 0, SENSOR_W, SENSOR_H), self.stars, self.sigma(),
                      gain=gain, bg=min(140, 8 + 8 * gain))
         jpeg = to_jpeg(PHOTO_W, PHOTO_H, buf, 90)
+        files = [("JPG", 0x3801, jpeg)]
+        if self.args.raw:                            # RAW+JPEG: erst die CR2, dann die JPG (wie die Kamera)
+            files.insert(0, ("CR2", 0xB103, (b"II*\0\x10\0\0\0CR" + jpeg) * 3))
         with self.lock:
-            handle, name = self.next_handle, "IMG_%04d.JPG" % self.next_img
-            self.next_handle += 1
+            number = self.next_img
             self.next_img += 1
-            self.objects[handle] = (name, jpeg)
-            nm = name.encode() + b"\0"
-            payload = bytearray(0x20 + len(nm))      # ObjectAddedEx: Handle @8, Speicher @0x0c, Format @0x10,
-            struct.pack_into("<IIH", payload, 0, handle, 0x00010001, 0x3801)      # Größe @0x1c, Name @0x28
-            struct.pack_into("<II", payload, 0x14, len(jpeg), 0x90000000)
-            payload[0x20:] = nm
-            self.events += [rec(E_OBJECT_ADDED, bytes(payload)), rec(E_STORAGE_INFO, struct.pack("<I", 0x00010001))]
-        self.log("Bild %s (%.1f MB) auf der Karte" % (name, len(jpeg) / 1e6))
+            for ext, fmt, data in files:
+                handle, name = self.next_handle, "IMG_%04d.%s" % (number, ext)
+                self.next_handle += 1
+                self.objects[handle] = (name, data)
+                nm = name.encode() + b"\0"
+                payload = bytearray(0x20 + len(nm))  # ObjectAddedEx: Handle @8, Speicher @0x0c, Format @0x10,
+                struct.pack_into("<IIH", payload, 0, handle, 0x00010001, fmt)     # Größe @0x1c, Name @0x28
+                struct.pack_into("<II", payload, 0x14, len(data), 0x90000000)
+                payload[0x20:] = nm
+                self.events.append(rec(E_OBJECT_ADDED, bytes(payload)))
+                self.log("Bild %s (%.1f MB) auf der Karte" % (name, len(data) / 1e6))
+            self.events.append(rec(E_STORAGE_INFO, struct.pack("<I", 0x00010001)))
 
     def object_info(self, handle):
         name, data = self.objects[handle]
@@ -382,12 +388,17 @@ class Camera:
                 if self.props[P_AEMODE] == MODE_B:
                     return OK, None, (3,)                            # löst im Modus B nicht aus
                 return self.release_on(), None, (0,)
-            if code in (0x1008, 0x1009):
+            if code in (0x1008, 0x1009, 0x101B):
                 if not params or params[0] not in self.objects:
                     return 0x2009, None, ()                          # InvalidObjectHandle
                 if code == 0x1008:
                     return OK, self.object_info(params[0]), ()
-                return OK, self.objects[params[0]][1], ()
+                data = self.objects[params[0]][1]
+                if code == 0x101B:                                   # GetPartialObject(handle, offset, max)
+                    offset = params[1] if len(params) > 1 else 0
+                    size = params[2] if len(params) > 2 else len(data)
+                    return OK, data[offset:offset + size], ()
+                return OK, data, ()
             if code == 0x9117:
                 return OK, None, ()
             return NOT_SUPPORTED, None, ()
@@ -535,7 +546,7 @@ class Server:
                     cam.log("Befehl 0x%04x %s" % (code, [hex(p) for p in params]))
                 rc, out, rparams = cam.handle(code, params, data)
                 if out is not None:
-                    self.send_data(s, tid, out, throttle=(code == 0x1009))
+                    self.send_data(s, tid, out, throttle=code in (0x1009, 0x101B))
                 body = struct.pack("<HI", rc, tid) + b"".join(struct.pack("<I", p) for p in rparams)
                 s.sendall(struct.pack("<II", 8 + len(body), OP_RESP) + body)
         except socket.timeout:
@@ -622,6 +633,7 @@ def parse_args(argv=None):
     p.add_argument("--apo", type=float, default=0, help="Abschaltautomatik nach N s (0 = aus)")
     p.add_argument("--focus", type=int, default=60, help="Abstand zur Schärfe beim Start")
     p.add_argument("--reject", action="store_true", help="jede Anmeldung ablehnen (InitFail 0x1)")
+    p.add_argument("--raw", action="store_true", help="RAW+JPEG: pro Aufnahme eine .CR2 und eine .JPG")
     p.add_argument("-v", "--verbose", action="store_true", help="jeden Befehl protokollieren")
     p.add_argument("-q", "--quiet", action="store_true")
     return p.parse_args(argv)
