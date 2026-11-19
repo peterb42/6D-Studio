@@ -18,6 +18,7 @@ Weitergeben:
 import csv
 import datetime
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -150,7 +151,7 @@ def index(out):
             for folder, label, _ in GROUPS:
                 paths = _files(os.path.join(base, folder), recursive=folder == "verworfen")
                 if folder == "siril":
-                    paths = [p for p in paths if kind_of(p) == "fits"]
+                    paths = [p for p in paths if kind_of(p) in RESULT_KINDS]
                 if paths:
                     groups.append(dict(_group_counts(paths), key=folder, label=label))
             if groups:
@@ -171,7 +172,27 @@ def index(out):
         if paths:
             lib_groups.append(dict(_group_counts(paths), key=kind, label=info["label"]))
     library = [{"id": "lib", "name": "Kalibrier-Bibliothek", "night": None, "groups": lib_groups}] if lib_groups else []
-    return {"sessions": sessions, "singles": singles, "library": library}
+    res = _result_files(out)
+    results = [{"id": "r:", "name": "Ergebnisse", "night": None,
+                "groups": [dict(_group_counts(res), key="all", label="Live-Stacks und Siril")]}] if res else []
+    return {"results": results, "sessions": sessions, "singles": singles, "library": library}
+
+
+RESULT_FOLDERS = ("livestack", "siril")
+RESULT_KINDS = ("fits", "png", "jpeg", "tiff")
+
+
+def _result_files(out):
+    """Alle Ergebnisse: Live-Stacks und Siril-Ergebnisse (FITS, fertig entwickelte JPEG/TIFF) aller Sitzungen."""
+    paths, astro_dir = [], _astro(out)
+    if os.path.isdir(astro_dir):
+        for name in os.listdir(astro_dir):
+            base = os.path.join(astro_dir, name)
+            if name == calib.LIBRARY_FOLDER or name.startswith(".") or not os.path.isdir(base):
+                continue
+            for folder in RESULT_FOLDERS:
+                paths += [p for p in _files(os.path.join(base, folder)) if kind_of(p) in RESULT_KINDS]
+    return paths
 
 
 def _source_files(out, source, group):
@@ -183,8 +204,10 @@ def _source_files(out, source, group):
         folder = os.path.join(base, group)
         paths = _files(folder, recursive=group == "verworfen")
         if group == "siril":
-            paths = [p for p in paths if kind_of(p) in ("fits", "tiff", "png")]
+            paths = [p for p in paths if kind_of(p) in RESULT_KINDS]
         return paths, folder
+    if source == "r:":
+        return _result_files(out), None
     if source.startswith("n:"):
         return [p for p in _single_files(out) if astro.night_date(os.path.getmtime(p)) == source[2:]], None
     if source == "lib":
@@ -240,8 +263,15 @@ def items(out, source, group):
                  "preview": rel_of(out, preview), "mtime": st.st_mtime, "meta": meta_of(primary)}
         if base and os.path.dirname(primary) != base:
             entry["from"] = os.path.basename(os.path.dirname(primary))       # verworfen/<Ordner>
+        parts = entry["id"].split("/")
+        if len(parts) >= 3 and parts[0] == "Astro" and parts[1] != calib.LIBRARY_FOLDER:
+            entry["session"] = parts[1]
+        entry["finished"] = os.path.basename(stem).endswith(FINISH_SUFFIX)
         result.append(entry)
-    result.sort(key=lambda e: (e["meta"].get("time") or "", e["name"]))
+    if source == "r:" or group in RESULT_FOLDERS:
+        result.sort(key=lambda e: -e["mtime"])                  # Ergebnisse: neueste zuerst
+    else:
+        result.sort(key=lambda e: (e["meta"].get("time") or "", e["name"]))
     return result
 
 
@@ -443,6 +473,120 @@ def cull(out, rels, restore=False):
     return moved
 
 
+# ---------------------------------------------------------------- Nachbearbeitung einer Sitzung
+CHECK_FILE = ".pruefung.json"
+COUNT_STARS = 300               # Sterne zählen bis hier (zum Ausrichten reichen die hellsten 100)
+
+
+def session_summary(out, session, library):
+    """Was die Oberfläche für den Ablauf Prüfen → Stapeln → Fertig entwickeln braucht."""
+    base = session_path(out, session)
+    sets = frame_sets(out, session, library)
+    lights = sets["light"]["files"]
+    cal = {t: {"n": len(sets[t]["files"]), "skipped": sets[t]["skipped"], "from": sets[t]["from"],
+               "master": sets[t]["master"]["name"] if sets[t]["master"] else None}
+           for t in ("bias", "dark", "flat", "darkflat")}
+    hints = []
+    if not cal["dark"]["n"] and not cal["dark"]["master"]:
+        hints.append("Keine passenden Darks – Hotpixel und Wärmerauschen bleiben. Darks mit ISO und Zeit der "
+                     "Lights: Bibliothek → „Geführt aufnehmen …“.")
+    if not cal["flat"]["n"] and not cal["flat"]["master"]:
+        hints.append("Keine Flats – Vignettierung und Staub bleiben (die Ecken werden später dunkler). "
+                     "„Fertig entwickeln“ gleicht den Hintergrund aus, Flats wären besser.")
+    if not cal["bias"]["n"] and not cal["bias"]["master"] and not cal["dark"]["n"]:
+        hints.append("Weder Bias noch Darks – als Offset dient der Schwarzwert der Kamera.")
+    check = None
+    try:
+        with open(os.path.join(base, CHECK_FILE), encoding="utf-8") as f:
+            check = json.load(f)
+        names = sorted(os.path.basename(p) for p in lights)
+        check["stale"] = sorted(fr["name"] for fr in check["frames"]) != names
+    except (OSError, ValueError, KeyError):
+        check = None
+    results = [it for it in items(out, "s:" + session, "siril") if it["kind"] == "fits"] if os.path.isdir(
+        os.path.join(base, "siril")) else []
+    results += [it for it in items(out, "s:" + session, "livestack") if it["kind"] == "fits"] if os.path.isdir(
+        os.path.join(base, "livestack")) else []
+    results.sort(key=lambda e: -e["mtime"])
+    finished = {}
+    for folder in RESULT_FOLDERS:
+        for p in _files(os.path.join(base, folder)):
+            stem = os.path.splitext(os.path.basename(p))[0]
+            if stem.endswith(FINISH_SUFFIX) and kind_of(p) == "jpeg":
+                finished[stem[:-len(FINISH_SUFFIX)]] = (rel_of(out, p), os.path.getmtime(p))
+    for r in results:                                # nur, wenn nach dem Stapel entwickelt (gleicher Name möglich)
+        hit = finished.get(r["name"])
+        r["finished_jpg"] = hit[0] if hit and hit[1] >= r["mtime"] - 1 else None
+    return {"session": session, "lights": len(lights), "lights_raw": sum(kind_of(p) == "raw" for p in lights),
+            "calib": cal, "hints": hints, "check": check, "results": results[:8],
+            "pixinsight": os.path.isdir(os.path.join(base, "pixinsight"))}
+
+
+def check_lights(out, session, progress=None):
+    """Lights prüfen wie der Live-Stack: Sterne finden, jedem Bild ein Bildfeld zuordnen (Sterne passen zusammen),
+    Ausreißer im Hauptfeld markieren – andere Bildausschnitte, wenige Sterne (Wolken, Tau), unscharfe oder
+    verwackelte Sterne, heller Himmel. Ergebnis auch in <Sitzung>/.pruefung.json."""
+    problem = imaging.missing()
+    if problem:
+        raise ValueError(problem)
+    import livestack
+    np = imaging.np
+    base = session_path(out, session)
+    lights = [p for p in _files(os.path.join(base, "lights")) if kind_of(p) == "raw"] or \
+        [p for p in _files(os.path.join(base, "lights")) if kind_of(p) == "jpeg"]
+    if not lights:
+        raise ValueError("Keine Lights in %s" % session)
+    progress = progress or (lambda *a: None)
+    frames, fields = [], []                          # fields: [(Referenz-Sterne, [Indizes])]
+    for i, p in enumerate(lights):
+        f = imaging.load(p)
+        if f.cfa:
+            x = f.data - np.float32(f.black)
+            livestack.hot_filter(x)
+            rgb = imaging.superpixel(x)
+        else:
+            rgb = f.data
+        found, fwhm = livestack.find_stars(rgb.sum(2), max_stars=COUNT_STARS)   # zählen: Wolken = weniger Sterne
+        stars = found[:livestack.MAX_STARS]                          # ausrichten mit den hellsten
+        info = {"name": os.path.basename(p), "rel": rel_of(out, p), "stars": len(found),
+                "fwhm": round(fwhm, 2) if fwhm else None, "bg": round(float(np.median(rgb[::8, ::8, 1])), 1),
+                "field": None, "why": None}
+        if len(stars) >= livestack.MIN_STARS:
+            for k, (ref, members) in enumerate(fields):
+                if livestack.register(stars, ref) is not None:
+                    members.append(i)
+                    info["field"] = k
+                    break
+            else:
+                fields.append((stars, [i]))
+                info["field"] = len(fields) - 1
+        frames.append(info)
+        progress(i + 1, len(lights), info["name"])
+    main = max(range(len(fields)), key=lambda k: len(fields[k][1])) if fields else None
+    inside = [f for f in frames if f["field"] == main]
+    med = lambda key: float(np.median([f[key] for f in inside if f[key]])) if inside else 0.0  # noqa: E731
+    m_stars, m_fwhm, m_bg = med("stars"), med("fwhm"), med("bg")
+    for f in frames:
+        if f["field"] is None:
+            f["why"] = "kaum Sterne (%d)" % f["stars"]
+        elif f["field"] != main:
+            f["why"] = "anderer Bildausschnitt"
+        elif m_stars and f["stars"] < 0.5 * m_stars:
+            f["why"] = "wenige Sterne (%d statt ~%d) – Wolken, Tau?" % (f["stars"], m_stars)
+        elif m_fwhm and f["fwhm"] and f["fwhm"] > 1.5 * m_fwhm:
+            f["why"] = "Sterne unscharf (FWHM %.1f statt ~%.1f px) – Wind, Fokus?" % (f["fwhm"], m_fwhm)
+        elif m_bg and f["bg"] > 1.3 * m_bg + 5:
+            f["why"] = "heller Himmel – Wolken, Licht, Dämmerung?"
+    odd = [f for f in frames if f["why"]]
+    other = [f for f in odd if f["why"] == "anderer Bildausschnitt"]
+    result = {"time": time.strftime("%Y-%m-%d %H:%M"), "n": len(frames), "main": len(inside),
+              "fields": len(fields), "frames": frames, "suggest": [f["rel"] for f in odd],
+              "other_field": len(other), "first_other": other[0]["name"] if other else None}
+    with open(os.path.join(base, CHECK_FILE), "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=1)
+    return result
+
+
 # ---------------------------------------------------------------- Kalibrierbilder für Export und Skript
 def _raws(folder):
     return [p for p in _files(folder) if kind_of(p) == "raw"]
@@ -604,9 +748,10 @@ def _q(path):
 
 
 def siril_script(sets, black=2047):
-    """Siril-Skript (ab 1.2) nach dem Vorbild von OSC_Preprocessing.ssf. Arbeitsordner: <Sitzung>/siril mit den
-    verknüpften RAWs. Fehlt ein Kalibriertyp, nimmt es den Master aus der Bibliothek (Siril liest unsere FITS
-    direkt), sonst den Schwarzwert als Offset."""
+    """Siril-Skript nach dem Vorbild von OSC_Preprocessing.ssf aus Siril 1.4 (requires 1.3.4, -32b). Arbeitsordner:
+    <Sitzung>/siril mit den verknüpften RAWs. Fehlt ein Kalibriertyp, nimmt es den Master aus der Bibliothek (Siril
+    liest unsere FITS direkt), sonst den Schwarzwert als Offset. Vor jedem Schritt steht „# >> <Schritt>“ – Siril
+    gibt Kommentare wörtlich aus, daran erkennt das Studio den Fortschritt (Sirils eigene Meldungen sind übersetzt)."""
     has = {t: bool(s["files"]) for t, s in sets.items()}
     lines = ["############################################",
              "# 6D Studio – Vorverarbeitung für Siril",
@@ -614,30 +759,33 @@ def siril_script(sets, black=2047):
              "# Arbeitsordner: dieser Ordner (lights, darks, flats, biases, darkflats",
              "# sind Verknüpfungen auf die RAWs der Sitzung)",
              "# Aufruf: siril-cli -d <dieser Ordner> -s %s" % SIRIL_SCRIPT,
-             "############################################", "", "requires 1.2.0", ""]
+             "############################################", "", "requires 1.3.4", ""]
 
-    def stack_raw(folder, name, extra, out_name, calibrate=None):
-        lines.extend(["# %s" % folder, "cd %s" % folder, "convert %s -out=../process" % name, "cd ../process"])
+    def stack_raw(folder, name, label, extra, out_name, calibrate=None):
+        lines.extend(["# >> %s einlesen" % label, "cd %s" % folder, "convert %s -out=../process" % name,
+                      "cd ../process"])
         seq = name
         if calibrate:
-            lines.append("calibrate %s %s" % (name, calibrate))
+            lines.extend(["# >> %s kalibrieren" % label, "calibrate %s %s" % (name, calibrate)])
             seq = "pp_" + name
-        lines.extend(["stack %s rej 3 3 %s -out=../masters/%s" % (seq, extra, out_name), "cd ..", ""])
+        lines.extend(["# >> Master-%s stapeln" % MASTER_LABEL[name],
+                      "stack %s rej 3 3 %s -out=../masters/%s" % (seq, extra, out_name), "cd ..", ""])
         return "../masters/" + out_name
 
     def master(kind):
         m = sets[kind]["master"]
         return _q(m["path"]) if m and m.get("path") else None
 
-    bias = stack_raw("biases", "bias", "-nonorm", "bias_stacked") if has["bias"] else master("bias")
+    bias = stack_raw("biases", "bias", "Bias", "-nonorm", "bias_stacked") if has["bias"] else master("bias")
     offset = bias or '"=%d"' % black
-    darkflat = stack_raw("darkflats", "darkflat", "-nonorm", "darkflat_stacked") if has["darkflat"] else None
+    darkflat = (stack_raw("darkflats", "darkflat", "Dark-Flats", "-nonorm", "darkflat_stacked")
+                if has["darkflat"] else None)
     if has["flat"]:
         cal = "-dark=%s" % darkflat if darkflat else "-bias=%s" % offset
-        flat = stack_raw("flats", "flat", "-norm=mul", "pp_flat_stacked", calibrate=cal)
+        flat = stack_raw("flats", "flat", "Flats", "-norm=mul", "pp_flat_stacked", calibrate=cal)
     else:
         flat = master("flat")
-    dark = stack_raw("darks", "dark", "-nonorm", "dark_stacked") if has["dark"] else master("dark")
+    dark = stack_raw("darks", "dark", "Darks", "-nonorm", "dark_stacked") if has["dark"] else master("dark")
     cal = []
     if dark:
         cal += ["-dark=%s" % dark, "-cc=dark"]
@@ -645,13 +793,24 @@ def siril_script(sets, black=2047):
         cal.append("-bias=%s" % offset)
     if flat:
         cal.append("-flat=%s" % flat)
-    lines.extend(["# Lights: kalibrieren, debayern, ausrichten (Homographie), stapeln",
-                  "cd lights", "convert light -out=../process", "cd ../process",
+    lines.extend(["# >> Lights einlesen", "cd lights", "convert light -out=../process", "cd ../process",
+                  "# >> Lights kalibrieren und debayern",
                   "calibrate light %s -cfa -equalize_cfa -debayer" % " ".join(cal),
-                  "register pp_light",
-                  "stack r_pp_light rej 3 3 -norm=addscale -output_norm -rgb_equal -out=result",
+                  "# >> Lights ausrichten (Homographie)", "register pp_light",
+                  "# >> Lights stapeln",
+                  "stack r_pp_light rej 3 3 -norm=addscale -output_norm -rgb_equal -32b -out=result",
+                  "# >> Ergebnis speichern",
                   "load result", "mirrorx -bottomup", "save ../ergebnis_$LIVETIME:%d$s", "cd ..", "close", ""])
     return "\n".join(lines)
+
+
+MASTER_LABEL = {"bias": "Bias", "darkflat": "Dark-Flat", "flat": "Flat", "dark": "Dark"}
+FINISH_SUFFIX = "_fertig"
+
+
+def script_steps(script):
+    """Schritte eines Skripts („# >> …“) – für die Fortschrittsanzeige."""
+    return [line[5:].strip() for line in script.splitlines() if line.startswith("# >> ")]
 
 
 def prepare_siril(out, session, library):
@@ -664,7 +823,8 @@ def prepare_siril(out, session, library):
     dest = os.path.join(base, "siril")
     if os.path.isdir(dest) and not os.path.isfile(os.path.join(dest, EXPORT_MARK)):
         raise ValueError("%s gibt es schon und stammt nicht von 6D Studio – bitte umbenennen" % dest)
-    keep = [n for n in os.listdir(dest) if kind_of(n) == "fits"] if os.path.isdir(dest) else []
+    keep = [n for n in os.listdir(dest) if kind_of(n) in ("fits", "tiff", "jpeg", "png")
+            and os.path.isfile(os.path.join(dest, n))] if os.path.isdir(dest) else []
     if keep:                                          # frühere Ergebnisse behalten
         tmp = os.path.join(base, ".siril-ergebnisse")
         os.makedirs(tmp, exist_ok=True)
@@ -683,6 +843,7 @@ def prepare_siril(out, session, library):
                 _link(p, os.path.join(dest, f, os.path.basename(p)))
         if s["master"] and not s["files"]:
             s["master"]["path"] = library.path(s["master"]["id"])
+            imaging.to_bottom_up(s["master"]["path"])  # ältere Masters: sonst läge er gespiegelt über den Lights
     script = siril_script(sets)
     with open(os.path.join(dest, SIRIL_SCRIPT), "w", encoding="utf-8") as f:
         f.write(script)
@@ -691,7 +852,58 @@ def prepare_siril(out, session, library):
     for t, s in sets.items():
         if s["skipped"] and used[t]:
             used[t] += " (%d mit anderer ISO/Zeit/Optik weggelassen)" % s["skipped"]
-    return {"folder": dest, "script": os.path.join(dest, SIRIL_SCRIPT), "used": used}
+    return {"folder": dest, "script": os.path.join(dest, SIRIL_SCRIPT), "used": used,
+            "steps": script_steps(script), "lights": len(lights)}
+
+
+def cleanup_siril(folder):
+    """Nach dem Stapeln: Zwischenbilder (process/) löschen – bei 69 Lights der 6D rund 40 GB. Masters und Ergebnis
+    bleiben. → freigegebene Bytes."""
+    process = os.path.join(folder, "process")
+    if not os.path.isdir(process) or not os.path.isfile(os.path.join(folder, EXPORT_MARK)):
+        return 0
+    freed = 0
+    for root, _, files in os.walk(process):
+        for n in files:
+            try:
+                freed += os.path.getsize(os.path.join(root, n))
+            except OSError:
+                pass
+    shutil.rmtree(process)
+    return freed
+
+
+def finish_script(name, out_name):
+    """Fertig entwickeln mit Siril: Hintergrund (subsky, Polynom 1. Grades), Grünstich (rmgreen), automatisch
+    strecken, als 16-Bit-TIFF und JPEG speichern."""
+    return "\n".join([
+        "# 6D Studio – fertig entwickeln: %s" % name, "requires 1.3.4",
+        "# >> Bild laden", "load %s" % _q(name),
+        "# >> Hintergrund und Gradient entfernen", "subsky 1 -samples=20 -tolerance=1.0 -smooth=0.5",
+        "# >> Grünstich entfernen", "rmgreen",
+        "# >> Strecken", "autostretch",
+        "# >> Speichern", "savetif %s" % _q(out_name), "savejpg %s 92" % _q(out_name), "close", ""])
+
+
+def prepare_finish(out, rel):
+    """Gestapeltes Bild (Live-Stack- oder Siril-FITS) für das Fertig-Skript vorbereiten. → Infos mit Skript."""
+    path = safe_path(out, rel)
+    if kind_of(path) != "fits" or not os.path.isfile(path):
+        raise ValueError("Fertig entwickeln geht mit gestapelten FITS (Live-Stack oder Siril-Ergebnis)")
+    if "/Bibliothek/" in path.replace(os.sep, "/"):
+        raise ValueError("Masters der Bibliothek sind Kalibrierbilder, keine Ergebnisse")
+    h, _ = imaging.read_fits_header(path)
+    if h.get("NAXIS") != 3:
+        raise ValueError("Nur farbige (debayerte) Stapel lassen sich fertig entwickeln")
+    imaging.to_bottom_up(path)                       # ältere Live-Stacks: sonst steht das Ergebnis auf dem Kopf
+    folder, name = os.path.split(path)
+    stem = os.path.splitext(name)[0]
+    script = finish_script(name, stem + FINISH_SUFFIX)
+    script_path = os.path.join(folder, ".6d-fertig.ssf")
+    with open(script_path, "w", encoding="utf-8") as f:
+        f.write(script)
+    return {"folder": folder, "script": script_path, "steps": script_steps(script),
+            "outputs": [os.path.join(folder, stem + FINISH_SUFFIX + e) for e in (".jpg", ".tif")]}
 
 
 def siril_cli(found=None):

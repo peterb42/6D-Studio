@@ -22,6 +22,7 @@ import json
 import math
 import os
 import queue
+import re
 import select
 import socket
 import struct
@@ -52,6 +53,7 @@ CAM_PORT = int(os.environ.get("CAM_PORT", "15740"))         # PTP/IP-Port der Ka
 GPHOTO_PORT = int(os.environ.get("GPHOTO_PORT", "15740"))   # lokaler Zugang für gphoto2 (127.0.0.1)
 WEB_PORT = int(os.environ.get("STUDIO_PORT", "8066"))
 OUT = os.path.expanduser(os.environ.get("OUT", "~/Pictures/6D-Tethering"))
+DEFAULT_OUT = os.path.expanduser("~/Pictures/6D-Tethering")   # Kamera-Ablage (Simulator: …/Simulator)
 PREVIEW_DIR = os.path.join(OUT, ".vorschau")
 HERE = os.path.dirname(os.path.realpath(__file__))
 INDEX_HTML = os.path.join(HERE, "6d-studio.html")
@@ -339,7 +341,8 @@ class Studio:
         self.last_light = None              # ISO, Zeit, Temperatur der letzten Lights (für passende Darks)
         self.used_index = {}                # (Ordner, Typ) → höchste vergebene Bildnummer (Downloads hinken nach)
         self.last_flat = None               # ISO, Zeit (Median), Blende, Helligkeit der letzten Flats (für Dark-Flats)
-        self.gallery_job = None             # Siril-Vorverarbeitung aus der Bildverwaltung
+        self.gallery_job = None             # Auftrag der Nachbearbeitung (Prüfen, Siril)
+        self._libraries = {}                # Bibliotheken weiterer Ablagen (Bildverwaltung)
         # Verbindung
         self.cam_cmd = self.cam_evt = None
         self.cli_cmd = self.cli_evt = None
@@ -1180,24 +1183,63 @@ class Studio:
 
     # ---------- Kalibrier-Bibliothek (calib.py)
     # ---------- Bildverwaltung (gallery.py)
+    def gallery_roots(self):
+        """Ablagen: die des Studios zuerst, dazu die Kamera- bzw. Simulator-Ablage – so zeigt die Bildverwaltung
+        z. B. die Live-Stacks der Kamera auch dann, wenn gerade das Simulator-Studio läuft."""
+        sim = os.path.join(DEFAULT_OUT, "Simulator")
+
+        def same(a, b):
+            return os.path.realpath(a) == os.path.realpath(b)
+        own = "Simulator" if same(OUT, sim) else "Kamera" if same(OUT, DEFAULT_OUT) else "Fotos"
+        roots = [{"key": "studio", "label": own, "path": OUT}]
+        for key, label, path in (("kamera", "Kamera", DEFAULT_OUT), ("simulator", "Simulator", sim)):
+            if os.path.isdir(path) and not any(same(path, r["path"]) for r in roots):
+                roots.append({"key": key, "label": label, "path": path})
+        return roots
+
+    def _root(self, key):
+        for r in self.gallery_roots():
+            if r["key"] == (key or "studio"):
+                return r["path"]
+        raise CameraError("Unbekannte Ablage")
+
+    def _library_for(self, path):
+        if os.path.realpath(path) == os.path.realpath(OUT):
+            return self.library
+        if path not in self._libraries:
+            self._libraries[path] = calib.Library(os.path.join(path, "Astro", calib.LIBRARY_FOLDER))
+        return self._libraries[path]
+
     def gallery_info(self):
         found = gallery.find_tools()
-        return {"index": gallery.index(OUT), "tools": gallery.tools_info(found),
-                "siril": bool(gallery.siril_cli(found)), "out": OUT.replace(os.path.expanduser("~"), "~"),
+        home = os.path.expanduser("~")
+        return {"roots": [dict(r, path=r["path"].replace(home, "~"), index=gallery.index(r["path"]))
+                          for r in self.gallery_roots()],
+                "tools": gallery.tools_info(found), "siril": bool(gallery.siril_cli(found)),
                 "frame_types": {k: v["label"] for k, v in astro.FRAME_TYPES.items()}}
+
+    def gallery_session(self, root, session):
+        out = self._root(root)
+        try:
+            return gallery.session_summary(out, session, self._library_for(out))
+        except ValueError as e:
+            raise CameraError(str(e)) from None
 
     def act_gallery_open(self, body):
         try:
-            gallery.open_with(OUT, body.get("rels") or [], body.get("tool"), bool(body.get("reveal")))
+            gallery.open_with(self._root(body.get("root")), body.get("rels") or [], body.get("tool"),
+                              bool(body.get("reveal")))
         except ValueError as e:
             raise CameraError(str(e)) from None
 
     def act_gallery_adopt(self, body):
         """Einzelaufnahmen als Lights (oder Kalibrierbilder) in eine Sitzung übernehmen."""
+        out = self._root(body.get("root"))
         try:
             with self.lock:
-                new = gallery.adopt(OUT, body.get("rels") or [], body.get("type") or "light", body.get("target"),
-                                    used=self.used_index)
+                own = os.path.realpath(out) == os.path.realpath(OUT)
+                new = gallery.adopt(out, body.get("rels") or [], body.get("type") or "light", body.get("target"),
+                                    used=self.used_index if own else {})
         except (ValueError, OSError) as e:
             raise CameraError(str(e)) from None
         self.log("Übernommen: %d Datei(en) → %s" % (len(new), os.path.dirname(new[0]) if new else "–"))
@@ -1206,7 +1248,7 @@ class Studio:
     def act_gallery_cull(self, body):
         restore = bool(body.get("restore"))
         try:
-            n = gallery.cull(OUT, body.get("rels") or [], restore=restore)
+            n = gallery.cull(self._root(body.get("root")), body.get("rels") or [], restore=restore)
         except (ValueError, OSError) as e:
             raise CameraError(str(e)) from None
         self.log("%s: %d Datei(en)" % ("Zurückgelegt" if restore else "Aussortiert", n))
@@ -1214,70 +1256,133 @@ class Studio:
 
     def act_gallery_export(self, body):
         """PixInsight (WBPP): verknüpfte Rohbilder je Typ, Listen und bilder.csv in <Sitzung>/pixinsight/."""
+        out = self._root(body.get("root"))
         try:
-            res = gallery.export_pixinsight(OUT, body.get("session"), self.library)
+            res = gallery.export_pixinsight(out, body.get("session"), self._library_for(out))
         except (ValueError, OSError) as e:
             raise CameraError(str(e)) from None
         self.log("PixInsight-Export: %s → %s" % (", ".join("%d %s" % (n, astro.FRAME_TYPES[t]["label"])
                                                             for t, n in res["counts"].items()),
                                                   res["folder"].replace(os.path.expanduser("~"), "~")))
         if body.get("reveal", True):
-            gallery.open_with(OUT, [gallery.rel_of(OUT, os.path.join(res["folder"], "LIESMICH.txt"))], reveal=True)
+            gallery.open_with(out, [gallery.rel_of(out, os.path.join(res["folder"], "LIESMICH.txt"))], reveal=True)
         return {"export": res}
 
-    def act_gallery_siril(self, body):
-        """Siril-Arbeitsordner und Skript anlegen; mit run und installiertem Siril gleich vorverarbeiten."""
-        if self.gallery_job and self.gallery_job["active"]:
-            raise CameraError("Siril läuft noch")
+    def act_gallery_script(self, body):
+        """Nur den Siril-Arbeitsordner mit Skript anlegen (zum Ausführen in Siril selbst)."""
+        out = self._root(body.get("root"))
         try:
-            res = gallery.prepare_siril(OUT, body.get("session"), self.library)
+            res = gallery.prepare_siril(out, body.get("session"), self._library_for(out))
         except (ValueError, OSError) as e:
             raise CameraError(str(e)) from None
-        self.log("Siril-Skript: %s (%s)" % (res["script"].replace(os.path.expanduser("~"), "~"),
-                                           ", ".join("%s: %s" % (astro.FRAME_TYPES[t]["label"], u)
-                                                     for t, u in res["used"].items() if u)))
-        cli = gallery.siril_cli()
-        if body.get("run"):
-            if not cli:
-                raise CameraError("Siril ist nicht installiert (siril.org) – das Skript liegt bereit: %s"
-                                  % res["script"].replace(os.path.expanduser("~"), "~"))
-            job = {"active": True, "session": body.get("session"), "phase": "startet", "lines": 0, "last": "",
-                   "error": None, "result": None, "started": time.time()}
-            self.gallery_job = job
-            threading.Thread(target=self._run_siril, args=(job, cli, res["folder"]), daemon=True).start()
-        elif body.get("reveal", True):
-            gallery.open_with(OUT, [gallery.rel_of(OUT, res["script"])], reveal=True)
-        return {"siril": dict(res, cli=bool(cli))}
+        if body.get("reveal", True):
+            gallery.open_with(out, [gallery.rel_of(out, res["script"])], reveal=True)
+        return {"siril": res}
 
-    def _run_siril(self, job, cli, folder):
-        """siril-cli -d <Ordner> -s <Skript>; die Ausgabe zeigt den Fortschritt."""
+    # Aufträge der Nachbearbeitung – einer zur Zeit, Fortschritt in gallery_job
+    def _start_job(self, kind, label, root, session, work):
+        if self.gallery_job and self.gallery_job["active"]:
+            raise CameraError("Es läuft schon: %s" % self.gallery_job["label"])
+        job = {"kind": kind, "label": label, "root": root or "studio", "session": session, "active": True,
+               "steps": [], "step": "startet", "index": 0, "percent": 0.0, "detail": "", "error": None,
+               "result": None, "results": [], "freed": 0, "check": None, "started": time.time(), "finished": None}
+        self.gallery_job = job
+
+        def run():
+            try:
+                work(job)
+                job["step"] = "fertig"
+            except Exception as e:
+                job["error"] = str(e)
+                self.log("❌ %s: %s" % (label, e))
+            finally:
+                job["active"] = False
+                job["finished"] = time.time()
+        threading.Thread(target=run, daemon=True).start()
+        return job
+
+    def _siril(self, job, folder, script):
+        """siril-cli -d <Ordner> -s <Skript>. Schritt aus den Kommentaren „# >> …“ (Siril gibt sie wörtlich aus,
+        seine eigenen Meldungen sind übersetzt), Prozent aus „progress: …, 42.00%“."""
+        cli = gallery.siril_cli()
+        if not cli:
+            raise RuntimeError("Siril ist nicht installiert (siril.org)")
+        last = ""
+        with subprocess.Popen([cli, "-d", folder, "-s", script], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, bufsize=1, errors="replace") as p:
+            for line in p.stdout:
+                line = line.strip().split("\r")[-1]
+                if line.startswith("log: # >> "):
+                    job["step"], job["percent"] = line[10:].strip(), 0.0
+                    job["index"] += 1
+                elif "progress:" in line:
+                    m = re.search(r"([0-9]+(?:\.[0-9]+)?)%", line)
+                    if m:
+                        job["percent"] = min(100.0, float(m.group(1)))
+                elif line.startswith("log: ") and not line.startswith("log: #"):
+                    last = line[5:]
+                    job["detail"] = last[:160]
+            rc = p.wait()
+        if rc != 0:
+            raise RuntimeError("Siril meldet einen Fehler (Code %d): %s" % (rc, last))
+
+    def act_gallery_check(self, body):
+        out, session = self._root(body.get("root")), body.get("session")
+
+        def work(job):
+            job["steps"], job["step"], job["index"] = ["Lights prüfen"], "Lights prüfen", 1
+            res = gallery.check_lights(out, session, lambda i, n, name: job.update(percent=100.0 * i / n,
+                                                                                  detail=name))
+            job["check"] = {k: res[k] for k in ("n", "main", "fields", "other_field", "first_other")}
+            job["check"]["suggest"] = len(res["suggest"])
+            self.log("Lights geprüft: %d im Hauptfeld, %d auffällig" % (res["main"], len(res["suggest"])))
+        self._start_job("check", "Lights prüfen", body.get("root"), session, work)
+
+    def act_gallery_stack(self, body):
+        """Mit Siril vorverarbeiten und stapeln; danach die Zwischenbilder löschen."""
+        out, session = self._root(body.get("root")), body.get("session")
+        if not gallery.siril_cli():
+            raise CameraError("Siril ist nicht installiert (siril.org) – oder „Für PixInsight“ nehmen")
+
+        def work(job):
+            res = gallery.prepare_siril(out, session, self._library_for(out))
+            job["steps"] = res["steps"]
+            t0 = time.time()
+            self.log("▶︎ Siril stapelt %d Lights von %s" % (res["lights"], session))
+            self._siril(job, res["folder"], res["script"])
+            new = [n for n in os.listdir(res["folder"]) if n.startswith("ergebnis_") and gallery.kind_of(n) == "fits"
+                   and os.path.getmtime(os.path.join(res["folder"], n)) >= t0 - 1]
+            if not new:
+                raise RuntimeError("Siril lief durch, aber es gibt kein Ergebnis")
+            job["result"] = gallery.rel_of(out, os.path.join(res["folder"], sorted(new)[-1]))
+            job["freed"] = gallery.cleanup_siril(res["folder"])
+            self.log("✔︎ Siril: %s in %.0f s – Zwischenbilder gelöscht (%.1f GB frei)" % (
+                sorted(new)[-1], time.time() - t0, job["freed"] / 1e9))
+        self._start_job("stack", "Mit Siril stapeln", body.get("root"), session, work)
+
+    def act_gallery_finish(self, body):
+        """Gestapeltes Bild mit Siril fertig entwickeln → JPEG und 16-Bit-TIFF daneben."""
+        out, rel = self._root(body.get("root")), body.get("rel")
+        if not gallery.siril_cli():
+            raise CameraError("Siril ist nicht installiert (siril.org)")
         try:
-            with subprocess.Popen([cli, "-d", folder, "-s", os.path.join(folder, gallery.SIRIL_SCRIPT)],
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as p:
-                job["phase"] = "läuft"
-                for line in p.stdout:
-                    line = line.strip()
-                    if line:
-                        job["lines"] += 1
-                        job["last"] = line[-200:]
-                rc = p.wait()
-            results = sorted((n for n in os.listdir(folder) if n.startswith("ergebnis_")),
-                             key=lambda n: os.path.getmtime(os.path.join(folder, n)))
-            if rc != 0:
-                job["error"] = "Siril meldet Fehler (Code %d): %s" % (rc, job["last"])
-            elif not results:
-                job["error"] = "Siril lief durch, aber es gibt kein Ergebnis: %s" % job["last"]
-            else:
-                job["result"] = gallery.rel_of(OUT, os.path.join(folder, results[-1]))
-                job["phase"] = "fertig"
-                self.log("✔︎ Siril: %s" % results[-1])
-        except Exception as e:
-            job["error"] = str(e)
-        finally:
-            job["active"] = False
-            if job["error"]:
-                job["phase"] = "Fehler"
-                self.log("❌ Siril: %s" % job["error"])
+            res = gallery.prepare_finish(out, rel)
+        except (ValueError, OSError) as e:
+            raise CameraError(str(e)) from None
+        parts = rel.split("/")
+
+        def work(job):
+            job["steps"] = res["steps"]
+            self._siril(job, res["folder"], res["script"])
+            os.remove(res["script"])
+            done = [p for p in res["outputs"] if os.path.isfile(p)]
+            if not done:
+                raise RuntimeError("Siril lief durch, aber es gibt kein fertiges Bild")
+            job["results"] = [gallery.rel_of(out, p) for p in done]
+            job["result"] = job["results"][0]
+            self.log("✔︎ Fertig entwickelt: %s" % ", ".join(os.path.basename(p) for p in done))
+        self._start_job("finish", "Fertig entwickeln", body.get("root"),
+                        parts[1] if len(parts) > 2 and parts[0] == "Astro" else None, work)
 
     def act_library_delete(self, body):
         try:
@@ -1567,7 +1672,8 @@ class Handler(BaseHTTPRequestHandler):
                "/api/live/analyze": "act_live_analyze",
                "/api/gallery/open": "act_gallery_open", "/api/gallery/adopt": "act_gallery_adopt",
                "/api/gallery/cull": "act_gallery_cull", "/api/gallery/export": "act_gallery_export",
-               "/api/gallery/siril": "act_gallery_siril",
+               "/api/gallery/script": "act_gallery_script", "/api/gallery/check": "act_gallery_check",
+               "/api/gallery/stack": "act_gallery_stack", "/api/gallery/finish": "act_gallery_finish",
                "/api/library/delete": "act_library_delete", "/api/library/build": "act_library_build"}
 
     def log_message(self, *a):
@@ -1598,16 +1704,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(st.library_info())
         elif u.path == "/api/gallery":
             self.send_json(st.gallery_info())
-        elif u.path in ("/api/gallery/items", "/api/gallery/thumb"):
-            q = parse_qs(u.query)
+        elif u.path in ("/api/gallery/items", "/api/gallery/thumb", "/api/gallery/session"):
+            q = {k: v[0] for k, v in parse_qs(u.query).items()}
             try:
+                out = st._root(q.get("root"))
                 if u.path == "/api/gallery/items":
-                    self.send_json({"items": gallery.items(OUT, q.get("source", [""])[0], q.get("group", [""])[0])})
+                    self.send_json({"items": gallery.items(out, q.get("source", ""), q.get("group", ""))})
+                elif u.path == "/api/gallery/session":
+                    self.send_json(st.gallery_session(q.get("root"), q.get("session")))
                 else:
-                    size = min(2400, max(64, int(q.get("size", [gallery.THUMB])[0])))
-                    data, ctype = gallery.thumbnail(OUT, q.get("rel", [""])[0], size)
+                    size = min(2400, max(64, int(q.get("size", gallery.THUMB))))
+                    data, ctype = gallery.thumbnail(out, q.get("rel", ""), size)
                     self.send_bytes(data, ctype)
-            except (ValueError, OSError) as e:
+            except (ValueError, OSError, CameraError) as e:
                 self.send_json({"error": str(e)}, 404)
         elif u.path == "/api/live.png":
             live, png, seq = st.live, None, 0

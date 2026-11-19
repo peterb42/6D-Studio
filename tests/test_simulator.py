@@ -365,41 +365,84 @@ class TestStudioMitSimulator(unittest.TestCase):
             self.assertTrue(wait_for(lambda: st.is_bulb_mode(), 5))
 
     @unittest.skipUnless(studio.imaging.missing() is None, "braucht numpy und rawpy (venv)")
-    def test_9d_bildverwaltung_export_und_siril(self):
+    def test_9d_bildverwaltung_ablauf_mit_siril(self):
+        """Ablagen, Prüfen, Stapeln, Fertig entwickeln – Siril hier als Ersatzprogramm, das die Schrittmarken
+        ausgibt, Zwischenbilder anlegt und Ergebnisse schreibt (das echte Siril: tests mit siril-cli separat)."""
         st = self.st
         info = st.gallery_info()
-        sessions = {x["name"]: x for x in info["index"]["sessions"]}
+        self.assertEqual(info["roots"][0]["key"], "studio")          # die eigene Ablage zuerst
+        sessions = {x["name"]: x for x in info["roots"][0]["index"]["sessions"]}
         name = next(n for n in sessions if n.endswith("_Flats"))        # aus test_9c: Lights, Flats, Dark-Flats
-        self.assertTrue(any(g["key"] == "lights" for g in sessions[name]["groups"]))
-        self.assertIn("light", info["frame_types"])
         res = st.act_gallery_export({"session": name, "reveal": False})["export"]
         self.assertEqual(res["counts"]["light"], 2)
-        self.assertTrue(os.path.isfile(os.path.join(res["folder"], "LIESMICH.txt")))
-        siril = st.act_gallery_siril({"session": name, "reveal": False})["siril"]
-        self.assertTrue(os.path.isfile(siril["script"]))
-        with self.assertRaises(studio.CameraError):                     # Siril fehlt: Skript liegt bereit
-            if not siril["cli"]:
-                st.act_gallery_siril({"session": name, "run": True})
-            else:
-                raise studio.CameraError("Siril installiert – Fehlerfall nicht prüfbar")
-        # Ablauf mit siril-cli – hier ein Ersatz, der wie Siril Zeilen ausgibt und ein Ergebnis schreibt
+        sm = st.gallery_session("studio", name)
+        self.assertEqual((sm["lights"], sm["calib"]["flat"]["n"]), (2, 3))
+        with self.assertRaises(studio.CameraError):
+            st._root("gibt-es-nicht")
+
+        def wait_job():
+            self.assertTrue(wait_for(lambda: not st.gallery_job["active"], 60), st.gallery_job)
+            self.assertIsNone(st.gallery_job["error"], st.gallery_job)
+            return st.gallery_job
+
+        st.act_gallery_check({"session": name})                        # echte Prüfung (numpy, rawpy)
+        job = wait_job()
+        self.assertEqual((job["check"]["n"], job["check"]["main"]), (2, 2))
+        self.assertEqual(st.gallery_session("studio", name)["check"]["main"], 2)
+
         fake = os.path.join(tempfile.mkdtemp(), "siril-cli")
         with open(fake, "w") as f:
-            f.write("#!/bin/sh\necho 'log: Siril 1.4'\necho 'log: Stacking 2 images'\n"
-                    "while [ $# -gt 0 ]; do [ \"$1\" = -d ] && d=$2; shift; done\n"
-                    "echo x > \"$d/ergebnis_2s.fit\"\n")
+            f.write("#!%s\n" % sys.executable + "\n".join([
+                "import os, sys",
+                "a = sys.argv; d = a[a.index('-d') + 1]",
+                "for line in open(a[a.index('-s') + 1]):",
+                "    line = line.strip()",
+                "    if line.startswith('# >> '):",
+                "        print('log: ' + line); print('progress: Konvertiere, 50.00%', flush=True)",
+                "    elif line.startswith('save ../ergebnis_'):",
+                "        os.makedirs(os.path.join(d, 'process'), exist_ok=True)",
+                "        open(os.path.join(d, 'process', 'pp_light_00001.fit'), 'wb').write(b'x' * 5000)",
+                "        open(os.path.join(d, 'ergebnis_2s.fit'), 'wb').write(b'x')",
+                "    elif line.split()[:1] in (['savejpg'], ['savetif']):",
+                "        ext = '.jpg' if line.startswith('savejpg') else '.tif'",
+                "        open(os.path.join(d, line.split()[1] + ext), 'wb').write(b'x')",
+                "print('log: Script-Ausführung erfolgreich.')", ""]))
         os.chmod(fake, 0o755)
-        job = {"active": True, "session": name, "phase": "", "lines": 0, "last": "", "error": None, "result": None}
-        st._run_siril(job, fake, siril["folder"])
-        self.assertEqual((job["active"], job["error"], job["lines"]), (False, None, 2))
-        self.assertTrue(job["result"].endswith("siril/ergebnis_2s.fit"))
-        groups = {g["key"] for x in st.gallery_info()["index"]["sessions"] if x["name"] == name for g in x["groups"]}
-        self.assertIn("siril", groups)                                   # Ergebnis erscheint in der Verwaltung
-        with open(fake, "w") as f:
-            f.write("#!/bin/sh\necho 'error: no images'\nexit 1\n")
-        job = dict(job, active=True, error=None, result=None, lines=0)
-        st._run_siril(job, fake, siril["folder"])
-        self.assertIn("no images", job["error"])
+        real = studio.gallery.siril_cli
+        studio.gallery.siril_cli = lambda found=None: fake
+        try:
+            st.act_gallery_stack({"session": name})
+            job = wait_job()
+            self.assertGreater(len(job["steps"]), 5)
+            self.assertEqual(job["index"], len(job["steps"]))          # jeder Schritt erkannt
+            self.assertTrue(job["result"].endswith("siril/ergebnis_2s.fit"))
+            folder = os.path.dirname(os.path.join(studio.OUT, job["result"]))
+            self.assertEqual(job["freed"], 5000)                       # Zwischenbilder gelöscht
+            self.assertFalse(os.path.isdir(os.path.join(folder, "process")))
+            # Fertig entwickeln eines Live-Stacks (RGB-FITS)
+            live = os.path.join(studio.OUT, "Astro", name, "livestack")
+            os.makedirs(live, exist_ok=True)
+            fits = os.path.join(live, "LIVESTACK_20261119-0100_3x2s_raw.fits")
+            studio.imaging.write_fits(fits, studio.imaging.np.ones((20, 30, 3), studio.imaging.np.float32), [])
+            rel = studio.gallery.rel_of(studio.OUT, fits)
+            st.act_gallery_finish({"rel": rel})
+            job = wait_job()
+            stem = "LIVESTACK_20261119-0100_3x2s_raw_fertig"
+            self.assertEqual(sorted(os.path.basename(r) for r in job["results"]), [stem + ".jpg", stem + ".tif"])
+            self.assertFalse(os.path.exists(os.path.join(live, ".6d-fertig.ssf")))
+            results = {r["name"]: r for r in st.gallery_session("studio", name)["results"]}
+            self.assertTrue(results["LIVESTACK_20261119-0100_3x2s_raw"]["finished_jpg"].endswith("_fertig.jpg"))
+            items = studio.gallery.items(studio.OUT, "r:", "all")          # Gruppe „Ergebnisse“
+            self.assertIn("ergebnis_2s", [i["name"] for i in items])
+            with self.assertRaises(studio.CameraError):                # Masters sind keine Ergebnisse
+                st.act_gallery_finish({"rel": "Astro/Bibliothek/flats/x.fits"})
+            with open(fake, "w") as f:                                  # Fehler von Siril kommt an
+                f.write("#!/bin/sh\necho 'log: Fehler: keine Bilder'\nexit 1\n")
+            st.act_gallery_stack({"session": name})
+            self.assertTrue(wait_for(lambda: not st.gallery_job["active"], 30))
+            self.assertIn("keine Bilder", st.gallery_job["error"])
+        finally:
+            studio.gallery.siril_cli = real
 
 
 if __name__ == "__main__":

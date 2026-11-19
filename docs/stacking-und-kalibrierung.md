@@ -182,7 +182,7 @@ stapeln. Der Vordergrund verschmiert, weil auf die Sterne ausgerichtet wird.
 Alle Angaben stehen im FITS-Kopf (`ISOSPEED`, `EXPTIME`, `CCD-TEMP`, `TEMPMIN/MAX`, `NCOMBINE`, `INSTRUME`,
 `DATE-OBS`, `BAYERPAT`, `MEDIAN`, `NOISE`, `HOTPIX`; Optik `FNUMBER`, `FOCALLEN`, `LENS`; bei Flats `FLATLVL`
 (Helligkeit), `VIGNET` (Lichtabfall zur Ecke), `FLATCAL` (was abgezogen wurde); `SOURCE`/`FIRSTIMG` (Sitzung und
-erstes Bild); 32-Bit-Gleitkomma 0…1 wie bei Siril. Die Karte zeigt die Masters als Tabelle (Spalte „Zeit / Optik“:
+erstes Bild); 32-Bit-Gleitkomma 0…1, Zeilen von unten (FITS-Standard, wie Siril RAWs einliest). Die Karte zeigt die Masters als Tabelle (Spalte „Zeit / Optik“:
 bei Flats Brennweite und Blende); ✓ markiert, was zu den letzten Lights passt – bei Dark-Flats, was zu den letzten
 Flats passt. Löschen per ✕.
 

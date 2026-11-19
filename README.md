@@ -235,7 +235,9 @@ Master.
 
 ### Bildverwaltung
 
-**Anzeige: Bilder** (<kbd>B</kbd>). Links die Quellen:
+**Anzeige: Bilder** (<kbd>B</kbd>). Links die Quellen, und zwar immer für die Kamera- **und** die
+Simulator-Ablage (die des laufenden Studios zuerst):
+- **Ergebnisse** – alle Live-Stacks und Siril-Ergebnisse, auch fertig entwickelte, neueste zuerst;
 - **Sitzungen** mit Lights, Darks, Bias, Flats, Dark-Flats, Live-Stack, Siril-Ergebnissen und Aussortierten;
 - **Einzelaufnahmen** aus dem normalen Kamerabetrieb (Auslösen, Bulb), je Nacht;
 - die **Kalibrier-Bibliothek**.
@@ -244,14 +246,28 @@ Rechts die Bilder als Vorschau. RAW und JPEG gleichen Namens sind ein Eintrag, e
 Live-Stacks. Klick wählt aus (Shift: Bereich, „Alle“), Doppelklick zeigt groß. Darunter stehen die Aufnahmedaten:
 Zeit, ISO, Belichtung, Sensortemperatur, Brennweite, Blende, Objektiv, Dateien.
 
-| Aktion | Funktion |
+**Nachbearbeitung einer Sitzung** – oben, in drei Schritten (✓ zeigt, was erledigt ist):
+
+1. **Prüfen**
+   - Zeigt, wie viele Lights es gibt, welche Kalibrierbilder passen und was fehlt.
+   - **Lights prüfen** (~0,5 s je Light) findet Lights mit anderem Bildausschnitt, Wolken, unscharfen Sternen oder
+     hellem Himmel. **N aussortieren** legt sie nach `verworfen/`.
+2. **Stapeln**
+   - **Mit Siril stapeln** (kalibrieren, debayern, ausrichten, stapeln) läuft im Hintergrund, mit Schritt und
+     Prozent.
+   - Danach löscht das Studio die Zwischenbilder (bei 69 Lights rund 40 GB).
+   - Oder **Für PixInsight** bzw. **Nur Skript**.
+3. **Fertig entwickeln** – für jeden Stapel der Sitzung (Siril oder Live-Stack). Siril entfernt Hintergrund und
+   Gradient, den Grünstich und streckt. JPEG und 16-Bit-TIFF landen als `<Stapel>_fertig` daneben, das Bild öffnet
+   sich gleich groß. **Öffnen …** gibt den Stapel an Siril oder PixInsight.
+
+| Aktion der Leiste | Funktion |
 |---|---|
+| **Fertig entwickeln** | ein gestapeltes FITS auswählen (z. B. in „Ergebnisse“) – wie Schritt 3 |
 | **Öffnen mit …** | in einem installierten Programm – PixInsight, Siril, GraXpert, Starry Landscape Stacker, Astro Pixel Processor, StarTools, Affinity Photo, Photoshop, Lightroom, darktable, Vorschau. Angeboten wird nur, was die Dateien lesen kann; bei RAW+JPEG bekommt z. B. Starry Landscape Stacker das JPEG. |
 | **Finder** | Datei im Finder zeigen |
 | **Aussortieren / Zurücklegen** | nach `<Sitzung>/verworfen/<Ordner>/` und zurück (RAW und JPEG zusammen) – Export und Siril lassen sie weg, gelöscht wird nichts |
 | **In Sitzung übernehmen …** | Einzelaufnahmen als Lights (oder Kalibrierbilder) in eine Sitzung verschieben. Sie werden nach der Namenskonvention benannt (Zeit, ISO, Belichtung, Blende aus dem EXIF) und in `serie.csv` eingetragen; die Nummern laufen mit den Serien fort. |
-| **Für PixInsight** | legt `<Sitzung>/pixinsight/` an, siehe unten |
-| **Siril …** | „Skript erstellen“ legt `<Sitzung>/siril/` an, siehe unten; mit installiertem Siril startet „In Siril vorverarbeiten“ es im Hintergrund (`siril-cli`). Das Ergebnis `ergebnis_<Zeit>s.fit` erscheint unter „Siril-Ergebnisse“. |
 
 **Für PixInsight (WBPP):** `<Sitzung>/pixinsight/` mit
 - `Light/`, `Dark/`, `Flat/`, `Bias/`: harte Verknüpfungen auf die Rohbilder, also kein zusätzlicher Platz;
@@ -271,9 +287,15 @@ Fehlt ein Typ, nimmt der Export die Rohbilder des passenden Masters aus der Bibl
 Sitzung. Masters selbst nimmt WBPP nur als XISF, unsere sind FITS.
 
 **Für Siril:** `<Sitzung>/siril/` mit `lights/ darks/ flats/ biases/ darkflats/` (nur die passenden RAWs,
-verknüpft) und `vorverarbeitung.ssf`, angelehnt an Sirils `OSC_Preprocessing`. Fehlt ein Kalibriertyp, nimmt das
-Skript die Rohbilder oder den Master aus der Bibliothek; Siril liest unsere FITS direkt. Ganz ohne Bias und Dark
-dient der Schwarzwert als Offset. Aufruf ohne Studio: `siril-cli -d <Sitzung>/siril -s vorverarbeitung.ssf`.
+verknüpft) und `vorverarbeitung.ssf`, nach Sirils `OSC_Preprocessing` aus Siril 1.4.
+
+- Fehlt ein Kalibriertyp, nimmt das Skript die Rohbilder oder den Master aus der Bibliothek; Siril liest unsere
+  FITS direkt.
+- Ganz ohne Bias und Dark dient der Schwarzwert als Offset.
+- Aufruf ohne Studio: `siril-cli -d <Sitzung>/siril -s vorverarbeitung.ssf`.
+
+Geprüft mit Siril 1.4.5. FITS schreibt das Studio wie Siril von unten nach oben, ältere dreht es vor der Benutzung
+um. Siehe [docs/nachbearbeitung.md](docs/nachbearbeitung.md).
 
 Unter der Leiste steht, welche Programme gefunden wurden und welche freien fehlen. Die Recherche zu den Programmen
 und Formaten steht in [docs/nachbearbeitung.md](docs/nachbearbeitung.md).
@@ -335,6 +357,13 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 ## Änderungen
 
 **19.11.2026**
+- **Nachbearbeitung** in der Bildverwaltung als Ablauf: Prüfen (Lights mit anderem Ausschnitt, Wolken, Unschärfe
+  finden und aussortieren) → mit Siril stapeln (Fortschritt, Zwischenbilder werden gelöscht) → fertig entwickeln
+  (Hintergrund, Grünstich, Strecken → JPEG/TIFF). Geprüft mit Siril 1.4.5.
+- Bildverwaltung zeigt immer Kamera- und Simulator-Ablage, dazu „Ergebnisse“ mit allen Live-Stacks und
+  Siril-Ergebnissen.
+- **FITS** jetzt von unten nach oben wie Siril – vorher standen Live-Stacks in Siril auf dem Kopf, und ein Master
+  hätte gespiegelt über den Lights gelegen. Ältere Dateien werden vor der Benutzung in Siril gedreht.
 - **Bildverwaltung** (Anzeige „Bilder“, `studio/gallery.py`):
   - Sitzungen, Einzelaufnahmen und Bibliothek mit Vorschaubildern und Aufnahmedaten;
   - aussortieren, Einzelaufnahmen in Sitzungen übernehmen;
@@ -378,9 +407,9 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 - **Live-Stack:** Der Live-Stack mittelt nur (außer „Satelliten entfernen“) – für das Endbild die RAWs in Siril
   stapeln. Der Vordergrund verschmiert, weil auf die Sterne ausgerichtet wird.
 - **Uhrzeit:** Datum und Uhrzeit der Masters kommen aus der Kamera – ihre Uhr sollte stimmen.
-- **Bildverwaltung:** Siril ist auf dem Entwicklungs-Mac nicht installiert – Skript und Ablauf sind mit einem
-  Ersatz für `siril-cli` getestet, nicht mit Siril selbst. Der PixInsight-Ordner ist gegen die Typ-Erkennung aus
-  dem WBPP-Quelltext geprüft, aber noch nicht in WBPP gelaufen. GraXpert ist nur über „Öffnen mit“ angebunden.
+- **Bildverwaltung:** Der PixInsight-Ordner ist gegen die Typ-Erkennung aus dem WBPP-Quelltext geprüft, aber
+  noch nicht in WBPP gelaufen. GraXpert ist nur über „Öffnen mit“ angebunden. Siril (1.4.5) ist mit echten Lights
+  geprüft.
 
 ## Projekt
 

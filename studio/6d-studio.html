@@ -119,6 +119,25 @@ table.mini td.why{color:var(--muted)}
 .gi .tick{position:absolute;top:5px;left:5px;width:16px;height:16px;border-radius:4px;border:1.5px solid #fffa;background:#0007;font-size:12px;line-height:14px;text-align:center;color:#fff}
 .gi.sel .tick{background:var(--accent);border-color:var(--accent)}
 .galinfo{font-size:12px;margin-top:8px;color:var(--muted);min-height:1.4em}
+.galnav .root{margin:4px 0 2px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);font-weight:700}
+.galnav .root:not(:first-child){margin-top:16px;padding-top:10px;border-top:1px solid var(--line)}
+.flow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:10px}
+.fstep{border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-size:12.5px;display:flex;flex-direction:column;gap:6px}
+.fstep.done{border-color:#2f6b3f}
+.fhead{display:flex;align-items:center;gap:7px;font-size:13.5px}
+.fnum{width:20px;height:20px;border-radius:50%;background:#22324d;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+.fstep.done .fnum{background:#2f6b3f}
+.fstep .hint{margin:0}
+.fstep .row{display:flex;flex-wrap:wrap;gap:6px;margin-top:auto}
+.fstep ul{margin:0;padding-left:16px;color:var(--muted)}
+.fres{display:flex;flex-direction:column;gap:6px}
+.fitem{display:grid;grid-template-columns:64px 1fr;gap:4px 8px;align-items:center}
+.fitem img{width:64px;height:43px;object-fit:cover;border-radius:4px;background:#000;cursor:zoom-in}
+.fitem .row{grid-column:2;margin:0}
+.galjob{border:1px solid var(--accent);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:13px}
+.galjob.err{border-color:var(--err)}
+.galjob.ok{border-color:#2f6b3f}
+.galjob .bar{margin-top:6px}
 .galviewer{position:fixed;inset:0;background:#000e;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;z-index:60;cursor:zoom-out}
 .galviewer img{max-width:96vw;max-height:90vh;object-fit:contain}
 .anahead{display:flex;align-items:center;gap:8px;margin-top:14px;padding-top:10px;border-top:1px solid var(--line)}
@@ -206,27 +225,22 @@ body.night #red{display:block}
       <div class="gal">
         <nav class="galnav" id="galNav"><span class="hint">Lade …</span></nav>
         <section class="galmain">
+          <div class="galjob" id="galJob" hidden></div>
+          <div class="flow" id="galFlow" hidden></div>
           <div class="galbar">
             <b id="galTitle"></b><span class="hint" id="galSub"></span><span class="spacer"></span>
             <button class="btn" id="galAll" title="Alle auswählen / keine">Alle</button>
+            <button class="btn primary" id="galFinish" hidden title="Mit Siril: Hintergrund entfernen, Grünstich weg, strecken – als JPEG und TIFF">Fertig entwickeln</button>
             <select id="galOpen" title="Ausgewählte Bilder in einem installierten Programm öffnen"></select>
             <button class="btn" id="galFinder" title="Im Finder zeigen">Finder</button>
             <button class="btn" id="galCull" title="Nach verworfen/ verschieben – Siril und PixInsight lassen sie dann weg">Aussortieren</button>
             <button class="btn" id="galAdopt" title="Einzelaufnahmen nach der Namenskonvention in eine Sitzung verschieben">In Sitzung übernehmen …</button>
-            <button class="btn" id="galPI" title="Ordner für WBPP mit Light/Dark/Flat/Bias, Listen und bilder.csv anlegen">Für PixInsight</button>
-            <button class="btn" id="galSiril" title="Siril-Arbeitsordner und Vorverarbeitungs-Skript">Siril …</button>
           </div>
           <div class="galpanel" id="galAdoptRow" hidden>
             <span class="lbl">Als</span><select id="galType"></select>
             <span class="lbl">Objekt</span><input type="text" id="galTarget" maxlength="40" placeholder="z. B. Milchstraße">
             <button class="btn primary" id="galAdoptGo">Übernehmen</button><button class="btn" id="galAdoptNo">Abbrechen</button>
             <div class="hint">Verschiebt RAW und JPEG in Astro/&lt;Nacht&gt;_&lt;Objekt&gt;/, benennt sie wie Serienbilder und trägt sie in serie.csv ein.</div>
-          </div>
-          <div class="galpanel" id="galSirilRow" hidden>
-            <button class="btn" id="galSirilScript">Skript erstellen</button>
-            <button class="btn primary" id="galSirilRun">In Siril vorverarbeiten</button>
-            <button class="btn" id="galSirilNo">Schließen</button>
-            <div class="hint" id="galSirilInfo"></div>
           </div>
           <div class="galgrid" id="galGrid"></div>
           <div class="galinfo" id="galInfo"></div>
@@ -1125,44 +1139,57 @@ $('#wzStart').onclick = async () => {
 
 
 // ---------------------------------------------------------------- Bildverwaltung (gallery.py)
-let GAL = {info: null, source: null, group: null, items: [], sel: new Set(), focus: null, last: null, panel: null};
+// Quellen je Ablage (Kamera, Simulator): Ergebnisse, Sitzungen, Einzelaufnahmen, Bibliothek. Bei einer Sitzung
+// steht oben der Ablauf Prüfen → Stapeln → Fertig entwickeln; Aufträge laufen im Studio (S.gallery_job).
+let GAL = {info: null, root: 'studio', source: null, group: null, items: [], sel: new Set(), focus: null, last: null,
+           panel: null, summary: null, jobSeen: null};
 const enc = encodeURIComponent;
 const fmtSize = b => b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${(b / 1e6).toFixed(b >= 1e8 ? 0 : 1)} MB`;
 const FRAME_GROUPS = ['lights', 'darks', 'biases', 'flats', 'darkflats'];
+const galDate = d => d ? d.split('-').reverse().join('.') : '';
+const galThumb = (rel, size) => `/api/gallery/thumb?root=${enc(GAL.root)}&rel=${enc(rel)}&size=${size || 360}`;
 async function apiJson(path, body) {                    // wie api(), liefert aber die ganze Antwort
   try {
-    const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
+    const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                 body: JSON.stringify(Object.assign({root: GAL.root}, body || {}))});
     const j = await r.json();
     if (!j.ok) toast(j.error || 'Fehler');
     poll(true);
     return j.ok ? j : null;
   } catch (e) { toast('6D Studio ist nicht erreichbar'); return null; }
 }
-function galSources() {
+function galSources() {                                 // alle Quellen aller Ablagen, in Anzeige-Reihenfolge
   if (!GAL.info) return [];
-  const I = GAL.info.index;
-  const date = d => d ? d.split('-').reverse().join('.') : '';
-  return I.sessions.map(x => ({id: x.id, title: x.target, sub: date(x.night), groups: x.groups, export: x.export, siril: x.siril}))
-    .concat(I.singles.map(x => ({id: x.id, title: 'Einzelaufnahmen', sub: date(x.night), groups: x.groups})))
-    .concat(I.library.map(x => ({id: x.id, title: x.name, sub: '', groups: x.groups})));
+  const out = [];
+  for (const r of GAL.info.roots) {
+    const I = r.index, add = (id, title, sub, groups, extra) =>
+      out.push(Object.assign({root: r.key, rootLabel: r.label, id, title, sub, groups}, extra || {}));
+    I.results.forEach(x => add(x.id, 'Ergebnisse', '', x.groups));
+    I.sessions.forEach(x => add(x.id, x.target, galDate(x.night), x.groups, {session: x.name, export: x.export}));
+    I.singles.forEach(x => add(x.id, 'Einzelaufnahmen', galDate(x.night), x.groups));
+    I.library.forEach(x => add(x.id, x.name, '', x.groups));
+  }
+  return out;
 }
+const galCur = () => galSources().find(x => x.root === GAL.root && x.id === GAL.source);
 async function loadGallery(keep) {
   try { GAL.info = await (await fetch('/api/gallery', {cache: 'no-store'})).json(); } catch (e) { return; }
-  const src = galSources();
-  const ok = src.some(x => x.id === GAL.source && x.groups.some(g => g.key === GAL.group));
-  if (!keep || !ok) {
-    const first = src[0];
+  const src = galSources(), cur = galCur();
+  if (!keep || !cur || !cur.groups.some(g => g.key === GAL.group)) {
+    // Vorgabe: die neueste Sitzung (Lights), sonst die Ergebnisse, sonst die erste Quelle
+    const first = src.find(x => x.session) || src[0];
+    GAL.root = first ? first.root : 'studio';
     GAL.source = first ? first.id : null;
     GAL.group = first ? (first.groups.find(g => g.key === 'lights') || first.groups[0]).key : null;
   }
   renderGalNav();
-  await loadGalItems();
+  await Promise.all([loadGalItems(), loadGalSummary()]);
 }
 async function loadGalItems() {
   GAL.items = [];
   if (GAL.source) {
     try {
-      const j = await (await fetch(`/api/gallery/items?source=${enc(GAL.source)}&group=${enc(GAL.group)}`, {cache: 'no-store'})).json();
+      const j = await (await fetch(`/api/gallery/items?root=${enc(GAL.root)}&source=${enc(GAL.source)}&group=${enc(GAL.group)}`, {cache: 'no-store'})).json();
       GAL.items = j.items || [];
       if (j.error) toast(j.error);
     } catch (e) {}
@@ -1171,37 +1198,60 @@ async function loadGalItems() {
   if (!GAL.items.some(i => i.id === GAL.focus)) GAL.focus = null;
   renderGalItems();
 }
+async function loadGalSummary() {
+  const cur = galCur();
+  GAL.summary = null;
+  if (cur && cur.session) {
+    try {
+      const j = await (await fetch(`/api/gallery/session?root=${enc(GAL.root)}&session=${enc(cur.session)}`, {cache: 'no-store'})).json();
+      if (!j.error) GAL.summary = j;
+    } catch (e) {}
+  }
+  renderGalFlow();
+}
 function renderGalNav() {
-  const src = galSources();
-  $('#galNav').innerHTML = !src.length ? '<span class="hint">Noch keine Bilder.</span>' : src.map(x =>
-    `<div class="src">${esc(x.title)} <small>${esc(x.sub)}</small>${x.export ? ' <span class="tag2" title="PixInsight-Export vorhanden">PI</span>' : ''}${x.siril ? ' <span class="tag2" title="Siril-Skript vorhanden">Siril</span>' : ''}</div>`
-    + x.groups.map(g => `<div class="grp${x.id === GAL.source && g.key === GAL.group ? ' on' : ''}" data-s="${esc(x.id)}" data-g="${esc(g.key)}" title="${g.files} Dateien · ${fmtSize(g.size)}"><span>${esc(g.label)}</span><small>${g.count}</small></div>`).join('')).join('');
+  let lastRoot = null;
+  $('#galNav').innerHTML = galSources().map(x => {
+    let h = '';
+    if (x.root !== lastRoot) { h += `<div class="root">${esc(x.rootLabel)}</div>`; lastRoot = x.root; }
+    h += `<div class="src">${esc(x.title)} <small>${esc(x.sub)}</small>${x.export ? ' <span class="tag2" title="PixInsight-Ordner vorhanden">PI</span>' : ''}</div>`;
+    return h + x.groups.map(g => `<div class="grp${x.root === GAL.root && x.id === GAL.source && g.key === GAL.group ? ' on' : ''}" data-r="${esc(x.root)}" data-s="${esc(x.id)}" data-g="${esc(g.key)}" title="${g.files} Dateien · ${fmtSize(g.size)}"><span>${esc(g.label)}</span><small>${g.count}</small></div>`).join('');
+  }).join('') || '<span class="hint">Noch keine Bilder.</span>';
 }
 $('#galNav').addEventListener('click', e => {
   const g = e.target.closest('.grp');
   if (!g) return;
-  GAL.source = g.dataset.s; GAL.group = g.dataset.g; GAL.sel.clear(); GAL.focus = null; GAL.panel = null;
+  const sameSession = g.dataset.r === GAL.root && g.dataset.s === GAL.source;
+  GAL.root = g.dataset.r; GAL.source = g.dataset.s; GAL.group = g.dataset.g;
+  GAL.sel.clear(); GAL.focus = null; GAL.panel = null;
   renderGalNav(); loadGalItems();
+  if (!sameSession) loadGalSummary();
 });
 function galCaption(it) {
   const m = it.meta || {}, parts = [];
   if (m.iso) parts.push(`ISO ${m.iso}`);
   if (m.exposure) parts.push(fmtExp(m.exposure));
   if (m.n) parts.push(`${m.n}×`);
+  if (it.finished) parts.push('fertig');
   return parts.join(' · ');
 }
 function galShort(it) {
   const n = it.name, m = n.match(/_(\d{4})$/);
-  return m ? m[1] : n.length > 22 ? '…' + n.slice(-20) : n;
+  if (m) return m[1];
+  const ls = n.match(/^LIVESTACK_(\d{8})-(\d{2})(\d{2})\d{2}_(\d+)x/);
+  if (ls) return `Live-Stack ${ls[4]}× · ${ls[2]}:${ls[3]}`;
+  const er = n.match(/^ergebnis_(\d+)s/);
+  if (er) return `Siril-Stapel ${fmtExp(+er[1])}`;
+  return n.length > 22 ? '…' + n.slice(-20) : n;
 }
 function galKinds(it) { return [...new Set(it.files.map(f => f.kind))].map(k => ({raw: 'RAW', jpeg: 'JPG', fits: 'FITS', png: 'PNG', tiff: 'TIFF'}[k] || k)).join('+'); }
 function renderGalItems() {
-  const src = galSources().find(x => x.id === GAL.source), grp = src && src.groups.find(g => g.key === GAL.group);
-  $('#galTitle').textContent = src ? `${src.title}${grp ? ' · ' + grp.label : ''}` : 'Bilder';
+  const src = galCur(), grp = src && src.groups.find(g => g.key === GAL.group);
+  $('#galTitle').textContent = src ? `${src.title}${grp && grp.label !== src.title ? ' · ' + grp.label : ''}` : 'Bilder';
   $('#galSub').textContent = GAL.items.length ? `${GAL.items.length} Bilder${GAL.sel.size ? ` · ${GAL.sel.size} ausgewählt` : ''}` : '';
   $('#galGrid').innerHTML = !GAL.items.length ? '<span class="hint">Keine Bilder in dieser Gruppe.</span>' : GAL.items.map((it, i) =>
-    `<div class="gi${GAL.sel.has(it.id) ? ' sel' : ''}${GAL.focus === it.id ? ' focus' : ''}" data-i="${i}" title="${esc(it.name)}">`
-    + `<img loading="lazy" src="/api/gallery/thumb?rel=${enc(it.preview)}&size=360" alt="">`
+    `<div class="gi${GAL.sel.has(it.id) ? ' sel' : ''}${GAL.focus === it.id ? ' focus' : ''}" data-i="${i}" title="${esc(it.name)}${it.session ? ' · ' + esc(it.session) : ''}">`
+    + `<img loading="lazy" src="${galThumb(it.preview)}" alt="">`
     + `<span class="tick">${GAL.sel.has(it.id) ? '✓' : ''}</span><span class="badge2">${galKinds(it)}</span>`
     + `<div class="cap"><b>${esc(galShort(it))}</b><span>${esc(galCaption(it))}</span></div></div>`).join('');
   renderGalInfo();
@@ -1211,6 +1261,7 @@ function renderGalInfo() {
   const it = GAL.items.find(i => i.id === GAL.focus);
   if (!it) { $('#galInfo').textContent = GAL.items.length ? 'Klick wählt aus (Shift: Bereich), Doppelklick zeigt groß.' : ''; return; }
   const m = it.meta || {}, parts = [it.name];
+  if (it.session) parts.push(it.session);
   if (m.time) parts.push(m.time);
   if (m.type) parts.push(m.type);
   if (m.iso) parts.push(`ISO ${m.iso}`);
@@ -1233,6 +1284,7 @@ function galFileFor(it, kinds) {                        // erste Datei des Bilds
   const f = it.files.find(x => kinds.includes(x.kind));
   return f ? f.rel : null;
 }
+const galStackable = it => it.kind === 'fits' && !it.finished && !/\/Bibliothek\//.test(it.id);
 function renderGalBar() {
   const picked = galPicked(), src = GAL.source || '', session = src.startsWith('s:');
   const tools = GAL.info ? GAL.info.tools : [];
@@ -1247,9 +1299,12 @@ function renderGalBar() {
   $('#galCull').disabled = !picked.length;
   $('#galAdopt').hidden = !src.startsWith('n:');
   $('#galAdopt').disabled = !picked.length;
-  $('#galPI').hidden = $('#galSiril').hidden = !session;
   $('#galAdoptRow').hidden = GAL.panel !== 'adopt' || !src.startsWith('n:');
-  $('#galSirilRow').hidden = GAL.panel !== 'siril' || !session;
+  const fin = picked.length === 1 && galStackable(picked[0]);
+  $('#galFinish').hidden = !GAL.items.some(galStackable);
+  $('#galFinish').disabled = !fin || !(GAL.info && GAL.info.siril) || galJobRunning();
+  $('#galFinish').title = !(GAL.info && GAL.info.siril) ? 'Siril ist nicht installiert (siril.org)'
+    : fin ? 'Mit Siril: Hintergrund entfernen, Grünstich weg, strecken – als JPEG und TIFF' : 'Ein gestapeltes Bild (FITS) auswählen';
   $('#galAll').textContent = GAL.sel.size && GAL.sel.size === GAL.items.length ? 'Keine' : 'Alle';
   if (GAL.info) {
     const names = tools.map(t => t.name).join(', ');
@@ -1258,20 +1313,135 @@ function renderGalBar() {
       ['sls', 'Starry Landscape Stacker (Mac App Store) – Milchstraße mit Vordergrund']]
       .filter(([id]) => !tools.some(t => t.id === id)).map(([, t]) => t);
     $('#galTools').textContent = `Programme gefunden: ${names || 'keine'}.` + (missing.length ? ` Empfohlen, nicht installiert: ${missing.join(' · ')}.` : '')
-      + ` Ablage: ${GAL.info.out}`;
+      + ' Ablagen: ' + GAL.info.roots.map(r => `${r.label} ${r.path}`).join(' · ');
   }
-  renderGalJob();
 }
-let galJobActive = false;
-function renderGalJob() {
-  const j = S && S.gallery_job, info = $('#galSirilInfo');
-  if (galJobActive && j && !j.active) loadGallery(true);   // Siril fertig → Ergebnis erscheint links
-  galJobActive = !!(j && j.active);
-  $('#galSirilRun').disabled = !(GAL.info && GAL.info.siril) || !!(j && j.active);
-  $('#galSirilRun').title = GAL.info && GAL.info.siril ? 'Skript mit siril-cli im Hintergrund ausführen' : 'Siril ist nicht installiert (siril.org)';
-  if (j && (j.active || j.error || j.result) && j.session === (GAL.source || '').slice(2))
-    info.textContent = j.active ? `Siril läuft · ${j.lines} Zeilen · ${j.last}` : j.error ? `Fehler: ${j.error}` : `Fertig: ${j.result}`;
+
+// ---------- Ablauf einer Sitzung: Prüfen → Stapeln → Fertig entwickeln
+const galJobRunning = () => !!(S && S.gallery_job && S.gallery_job.active);
+function renderGalFlow() {
+  const box = $('#galFlow'), sm = GAL.summary;
+  box.hidden = !sm;
+  if (!sm) return;
+  const c = sm.calib, siril = GAL.info && GAL.info.siril, busy = galJobRunning();
+  const cal = (label, x) => x.n ? `${label} ${x.n}${x.from ? ` (aus ${x.from})` : ''}` : x.master ? `${label}: Master` : `${label} –`;
+  const skipped = Object.entries(c).filter(([, x]) => x.skipped).map(([t, x]) => `${x.skipped} ${GAL.info.frame_types[t]}`);
+  const ck = sm.check;
+  let check = '<div class="hint">Noch nicht geprüft. Die Prüfung findet Bilder mit anderem Ausschnitt, Wolken oder unscharfen Sternen (~0,5 s je Light).</div>';
+  if (ck) {
+    const odd = ck.suggest.length;
+    check = `<div>Geprüft ${esc(ck.time)}${ck.stale ? ' <span class="warn">(Lights seither geändert)</span>' : ''}: <b>${ck.main}</b> im Hauptfeld`
+      + (ck.other_field ? ` · <span class="warn">${ck.other_field} anderer Bildausschnitt</span> (ab ${esc(galShort({name: ck.first_other.replace(/\.[^.]+$/, '')}))})` : '')
+      + (odd - ck.other_field > 0 ? ` · <span class="warn">${odd - ck.other_field} auffällig</span>` : '')
+      + (!odd ? ' · <span class="ok">alles passt ✓</span>' : '') + '</div>';
+  }
+  const odd = ck && !ck.stale ? ck.suggest.length : 0;
+  const est = Math.round((sm.lights_raw * 2.6 + (c.bias.n + c.dark.n + c.flat.n + c.darkflat.n) * 0.4) / 60) || 1;
+  const calText = [c.dark.n || c.dark.master ? 'Darks' : '', c.bias.n || c.bias.master ? 'Bias' : '', c.flat.n || c.flat.master ? 'Flats' : '',
+    c.darkflat.n ? 'Dark-Flats' : ''].filter(Boolean).join(', ') || 'Schwarzwert';
+  const res = sm.results.map(r => `<div class="fitem"><img src="${galThumb(r.finished_jpg || r.preview, 200)}" data-big="${esc(r.finished_jpg || r.preview)}" alt="">`
+    + `<div><b>${esc(galShort(r))}</b> <span class="hint">${esc((r.meta.time || '').slice(0, 16))}</span>${r.finished_jpg ? ' <span class="ok">fertig ✓</span>' : ''}</div>`
+    + `<div class="row"><button class="btn${r.finished_jpg ? '' : ' primary'}" data-a="finish" data-rel="${esc(r.id)}"${siril && !busy ? '' : ' disabled'}>${r.finished_jpg ? 'Neu entwickeln' : 'Fertig entwickeln'}</button>`
+    + (r.finished_jpg ? `<button class="btn" data-a="view" data-rel="${esc(r.finished_jpg)}">Ansehen</button>` : '')
+    + `<button class="btn" data-a="open" data-rel="${esc(r.id)}" title="Gestapeltes Bild (FITS) in Siril oder PixInsight öffnen">Öffnen …</button></div></div>`).join('');
+  box.innerHTML =
+    `<div class="fstep${ck && !ck.stale && !odd ? ' done' : ''}"><div class="fhead"><span class="fnum">1</span><b>Prüfen</b></div>`
+    + `<div>${sm.lights} Lights · ${cal('Darks', c.dark)} · ${cal('Bias', c.bias)} · ${cal('Flats', c.flat)}${c.darkflat.n ? ' · ' + cal('Dark-Flats', c.darkflat) : ''}`
+    + (skipped.length ? `<div class="hint">nicht passend, bleiben draußen: ${skipped.join(', ')}</div>` : '') + '</div>'
+    + (sm.hints.length ? `<ul>${sm.hints.map(h => `<li>${esc(h)}</li>`).join('')}</ul>` : '') + check
+    + `<div class="row"><button class="btn${ck ? '' : ' primary'}" data-a="check"${busy ? ' disabled' : ''}>${ck ? 'Neu prüfen' : 'Lights prüfen'}</button>`
+    + (odd ? `<button class="btn primary" data-a="cull">${odd} aussortieren</button><button class="btn" data-a="showodd">zeigen</button>` : '') + '</div></div>'
+    + `<div class="fstep${sm.results.some(r => /^ergebnis_/.test(r.name)) ? ' done' : ''}"><div class="fhead"><span class="fnum">2</span><b>Stapeln</b></div>`
+    + `<div class="hint">${siril ? `Siril kalibriert mit ${calText}, debayert, richtet aus und stapelt ${sm.lights_raw} RAW-Lights (≈ ${est} min). Die Zwischenbilder werden danach gelöscht.`
+                                 : 'Siril ist nicht installiert (kostenlos, siril.org) – oder für PixInsight vorbereiten.'}</div>`
+    + `<div class="row"><button class="btn primary" data-a="stack"${siril && sm.lights_raw && !busy ? '' : ' disabled'}>Mit Siril stapeln</button>`
+    + `<button class="btn" data-a="pi" title="Ordner für WBPP: Light/Dark/Flat/Bias als Verknüpfungen, Listen, bilder.csv">Für PixInsight</button>`
+    + `<button class="btn" data-a="script" title="Arbeitsordner mit Skript, zum Ausführen in Siril selbst">Nur Skript</button></div></div>`
+    + `<div class="fstep${sm.results.some(r => r.finished_jpg) ? ' done' : ''}"><div class="fhead"><span class="fnum">3</span><b>Fertig entwickeln</b></div>`
+    + (res ? `<div class="hint">Hintergrund und Gradient entfernen, Grünstich weg, strecken – als JPEG und 16-Bit-TIFF neben dem Stapel.</div><div class="fres">${res}</div>`
+           : '<div class="hint">Noch kein gestapeltes Bild – zuerst stapeln (Schritt 2) oder einen Live-Stack speichern.</div>') + '</div>';
 }
+$('#galFlow').addEventListener('click', async e => {
+  const img = e.target.closest('img[data-big]');
+  if (img) return galView(img.dataset.big, '');
+  const b = e.target.closest('button[data-a]');
+  if (!b || b.disabled) return;
+  const sm = GAL.summary, a = b.dataset.a;
+  if (a === 'check') { if (await apiJson('/api/gallery/check', {session: sm.session})) GAL.jobSeen = null; }
+  else if (a === 'cull') {
+    const rels = sm.check.suggest;
+    if (confirm(`${rels.length} auffällige Lights nach „verworfen“ verschieben? (Zurücklegen geht in der Gruppe „Aussortiert“.)`)
+        && await apiJson('/api/gallery/cull', {rels})) { toast(`${rels.length} Lights aussortiert`); loadGallery(true); }
+  }
+  else if (a === 'showodd') {
+    GAL.group = 'lights'; GAL.sel = new Set(sm.check.suggest); renderGalNav(); await loadGalItems();
+    GAL.sel = new Set(sm.check.suggest.filter(r => GAL.items.some(i => i.id === r))); renderGalItems();
+    toast('Die auffälligen Lights sind ausgewählt');
+  }
+  else if (a === 'stack') apiJson('/api/gallery/stack', {session: sm.session});
+  else if (a === 'pi') {
+    const j = await apiJson('/api/gallery/export', {session: sm.session});
+    if (j) {
+      const names = GAL.info.frame_types, e2 = j.export;
+      toast(`PixInsight-Ordner angelegt: ${Object.entries(e2.counts).map(([t, n]) => `${n} ${names[t]}`).join(', ')}. In WBPP: „+ Directory“ → pixinsight`);
+      loadGallery(true);
+    }
+  }
+  else if (a === 'script') {
+    const j = await apiJson('/api/gallery/script', {session: sm.session});
+    if (j) toast(`Siril-Skript: ${j.siril.script} – in Siril: Skripte → Skript ausführen`);
+  }
+  else if (a === 'finish') galFinish(b.dataset.rel);
+  else if (a === 'view') galView(b.dataset.rel, '');
+  else if (a === 'open') {
+    const t = GAL.info.tools.find(x => x.id === 'siril') || GAL.info.tools.find(x => x.id === 'pixinsight');
+    if (t) apiJson('/api/gallery/open', {rels: [b.dataset.rel], tool: t.id}).then(j => j && toast(`→ ${t.name}`));
+    else apiJson('/api/gallery/open', {rels: [b.dataset.rel], reveal: true});
+  }
+});
+async function galFinish(rel) {
+  if (await apiJson('/api/gallery/finish', {rel})) GAL.jobSeen = null;
+}
+function galView(rel, cap) {
+  $('#galViewerImg').src = galThumb(rel, 1600);
+  $('#galViewerCap').textContent = (cap ? cap + ' – ' : '') + 'Klick oder Esc schließt';
+  $('#galViewer').hidden = false;
+}
+function renderGalJob() {                               // laufender oder zuletzt beendeter Auftrag
+  const j = S && S.gallery_job, box = $('#galJob');
+  if (!j) { box.hidden = true; return; }
+  const key = `${j.started}|${j.active}`;
+  if (!j.active && GAL.jobSeen !== key && GAL.jobSeen !== null && GAL.jobSeen.startsWith(`${j.started}|true`)) {
+    loadGallery(true);                                  // eben fertig geworden → Übersicht neu
+    if (!j.error && j.kind === 'finish' && j.result) galView(j.result, 'Fertig entwickelt');
+    if (!j.error) toast(`✔︎ ${j.label} fertig`);
+  }
+  GAL.jobSeen = key;
+  const n = j.steps.length, pct = n ? Math.min(100, ((Math.max(j.index, 1) - 1) + j.percent / 100) / n * 100) : j.percent;
+  box.hidden = false;
+  box.className = 'galjob' + (j.error ? ' err' : j.active ? '' : ' ok');
+  const where = j.session ? ` · ${esc(j.session)}` : '';
+  if (j.active)
+    box.innerHTML = `<b>${esc(j.label)}</b>${where} · ${n ? `Schritt ${Math.max(j.index, 1)}/${n}: ` : ''}${esc(j.step)} · ${Math.round(pct)} %`
+      + `<div class="hint">${esc(j.detail || '')}</div><div class="bar"><div style="width:${pct.toFixed(1)}%"></div></div>`;
+  else if (j.error) box.innerHTML = `<b>${esc(j.label)}</b>${where}: <span class="bad">${esc(j.error)}</span>`;
+  else box.innerHTML = `<b>✔︎ ${esc(j.label)}</b>${where}`
+    + (j.check ? ` – ${j.check.main} im Hauptfeld, ${j.check.suggest} auffällig` : '')
+    + (j.result ? ` – ${esc(j.result.split('/').pop())}` : '') + (j.freed ? ` · ${fmtSize(j.freed)} Zwischenbilder gelöscht` : '')
+    + (j.kind === 'stack' && j.result ? ` <button class="btn primary" data-a="finish" data-rel="${esc(j.result)}">Fertig entwickeln</button>` : '')
+    + (j.kind === 'finish' && j.result ? ` <button class="btn" data-a="view" data-rel="${esc(j.result)}">Ansehen</button>` : '');
+  renderGalBar();
+  const sm = GAL.summary;
+  if (sm && !j.active) renderGalFlow();
+}
+$('#galJob').addEventListener('click', e => {
+  const b = e.target.closest('button[data-a]');
+  if (!b) return;
+  if (b.dataset.a === 'finish') galFinish(b.dataset.rel);
+  else galView(b.dataset.rel, 'Fertig entwickelt');
+});
+
+// ---------- Auswahl und Aktionen der Leiste
 $('#galGrid').addEventListener('click', e => {
   const el = e.target.closest('.gi');
   if (!el) return;
@@ -1288,15 +1458,14 @@ $('#galGrid').addEventListener('dblclick', e => {
   const el = e.target.closest('.gi');
   if (!el) return;
   const it = GAL.items[+el.dataset.i];
-  $('#galViewerImg').src = `/api/gallery/thumb?rel=${enc(it.preview)}&size=1600`;
-  $('#galViewerCap').textContent = `${it.name} · ${galCaption(it)} – Klick oder Esc schließt`;
-  $('#galViewer').hidden = false;
+  galView(it.preview, `${it.name} · ${galCaption(it)}`);
 });
 $('#galViewer').onclick = () => { $('#galViewer').hidden = true; };
 $('#galAll').onclick = () => {
   if (GAL.sel.size === GAL.items.length) GAL.sel.clear(); else GAL.items.forEach(i => GAL.sel.add(i.id));
   renderGalItems();
 };
+$('#galFinish').onclick = () => { const p = galPicked(); if (p.length === 1) galFinish(p[0].id); };
 $('#galOpen').onchange = async e => {
   const tool = e.target.value, t = GAL.info.tools.find(x => x.id === tool);
   e.target.value = '';
@@ -1328,27 +1497,6 @@ $('#galAdoptGo').onclick = async () => {
     loadGallery(true);
   }
 };
-$('#galPI').onclick = async () => {
-  const j = await apiJson('/api/gallery/export', {session: GAL.source.slice(2)});
-  if (!j) return;
-  const e = j.export, names = GAL.info.frame_types;
-  const parts = Object.entries(e.counts).map(([t, n]) => `${n} ${names[t]}`);
-  const skipped = Object.entries(e.skipped || {}).map(([t, n]) => `${n} ${names[t]} mit anderer ISO/Zeit/Optik weggelassen`);
-  toast(`PixInsight-Ordner angelegt: ${parts.join(', ')}${skipped.length ? ' (' + skipped.join(', ') + ')' : ''}. In WBPP: „+ Directory“ → pixinsight`);
-  loadGallery(true);
-};
-$('#galSiril').onclick = () => { GAL.panel = GAL.panel === 'siril' ? null : 'siril'; renderGalBar(); };
-$('#galSirilNo').onclick = () => { GAL.panel = null; renderGalBar(); };
-async function galSiril(run) {
-  const j = await apiJson('/api/gallery/siril', {session: GAL.source.slice(2), run});
-  if (!j) return;
-  const names = GAL.info.frame_types;
-  $('#galSirilInfo').textContent = `Skript: ${j.siril.script} · ` + Object.entries(j.siril.used).filter(([, u]) => u)
-    .map(([t, u]) => `${names[t]}: ${u}`).join(' · ') + (run ? ' · Siril läuft …' : '');
-  loadGallery(true);
-}
-$('#galSirilScript').onclick = () => galSiril(false);
-$('#galSirilRun').onclick = () => galSiril(true);
 
 // ---------------------------------------------------------------- Livebild
 function contentRect() {

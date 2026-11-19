@@ -106,6 +106,9 @@ class TestVerwaltung(unittest.TestCase):
         groups = {g["key"]: (g["count"], g["files"]) for g in s["groups"]}
         self.assertEqual(groups["lights"], (3, 6))                     # RAW+JPG = ein Bild
         self.assertEqual(groups["livestack"], (1, 2))                  # FITS+PNG = ein Bild
+        self.assertEqual(idx["results"][0]["groups"][0]["count"], 1)   # „Ergebnisse“ über alle Sitzungen
+        res = gallery.items(self.a.out, "r:", "all")
+        self.assertEqual((res[0]["kind"], res[0]["session"]), ("fits", SESSION))
         self.assertEqual([(n["night"], n["groups"][0]["count"]) for n in idx["singles"]], [("2026-11-18", 2)])
         lights = gallery.items(self.a.out, "s:" + SESSION, "lights")
         self.assertEqual(len(lights), 3)
@@ -248,7 +251,13 @@ class TestWeitergeben(unittest.TestCase):
     def test_siril_skript_mit_allen_rohbildern(self):
         res = gallery.prepare_siril(self.a.out, SESSION, self.lib)
         script = read(res["script"])
-        self.assertTrue(script.splitlines()[8].startswith("requires 1.2.0"))
+        self.assertIn("\nrequires 1.3.4\n", script)                    # wie OSC_Preprocessing.ssf aus Siril 1.4
+        self.assertIn("stack r_pp_light rej 3 3 -norm=addscale -output_norm -rgb_equal -32b -out=result", script)
+        steps = gallery.script_steps(script)
+        self.assertEqual(steps, res["steps"])
+        self.assertEqual(steps[:2], ["Bias einlesen", "Master-Bias stapeln"])
+        self.assertEqual(steps[-4:], ["Lights kalibrieren und debayern", "Lights ausrichten (Homographie)",
+                                      "Lights stapeln", "Ergebnis speichern"])
         for line in ("stack bias rej 3 3 -nonorm -out=../masters/bias_stacked",
                      "calibrate flat -dark=../masters/darkflat_stacked",      # Dark-Flats statt Bias für die Flats
                      "stack pp_flat rej 3 3 -norm=mul -out=../masters/pp_flat_stacked",
@@ -295,6 +304,74 @@ class TestWeitergeben(unittest.TestCase):
         data, ctype = gallery.thumbnail(self.a.out, gallery.rel_of(self.a.out, p), 120)
         self.assertEqual(ctype, "image/png")
         self.assertTrue(data.startswith(b"\x89PNG"))
+
+
+class TestNachbearbeitung(unittest.TestCase):
+    def setUp(self):
+        self.a = Ablage()
+        self.addCleanup(self.a.cleanup)
+
+    def test_aufraeumen_nach_siril(self):
+        folder = os.path.join(self.a.base, "siril")
+        os.makedirs(os.path.join(folder, "process"))
+        with open(os.path.join(folder, "process", "pp_light_00001.fit"), "wb") as f:
+            f.write(b"x" * 1234)
+        self.assertEqual(gallery.cleanup_siril(folder), 0)              # ohne Marke: fremder Ordner, nichts tun
+        open(os.path.join(folder, gallery.EXPORT_MARK), "w").close()
+        self.assertEqual(gallery.cleanup_siril(folder), 1234)
+        self.assertFalse(os.path.exists(os.path.join(folder, "process")))
+
+    @unittest.skipUnless(HAS_NUMPY, "braucht numpy (venv)")
+    def test_fertig_entwickeln_vorbereiten(self):
+        np = imaging.np
+        live = os.path.join(self.a.base, "livestack")
+        os.makedirs(live)
+        rgb = np.random.default_rng(2).uniform(0, 900, (12, 16, 3)).astype(np.float32)
+        p = os.path.join(live, "LIVESTACK_x.fits")
+        imaging.write_fits(p, rgb, [])
+        res = gallery.prepare_finish(self.a.out, gallery.rel_of(self.a.out, p))
+        script = read(res["script"])
+        for line in ("load LIVESTACK_x.fits", "subsky 1 -samples=20 -tolerance=1.0 -smooth=0.5", "rmgreen",
+                     "autostretch", "savetif LIVESTACK_x_fertig", "savejpg LIVESTACK_x_fertig 92"):
+            self.assertIn(line, script)
+        self.assertEqual(res["steps"][0], "Bild laden")
+        self.assertEqual([os.path.basename(o) for o in res["outputs"]], ["LIVESTACK_x_fertig.jpg",
+                                                                          "LIVESTACK_x_fertig.tif"])
+        cfa = os.path.join(live, "einkanal.fits")                     # ohne Farbe: nicht fertig zu entwickeln
+        imaging.write_fits(cfa, rgb[..., 0], [])
+        with self.assertRaises(ValueError):
+            gallery.prepare_finish(self.a.out, gallery.rel_of(self.a.out, cfa))
+
+    @unittest.skipUnless(HAS_NUMPY and imaging.rawpy is not None, "braucht numpy und rawpy (venv)")
+    def test_lights_pruefen_findet_anderes_feld_und_wolken(self):
+        field_a, field_b = sim.make_stars(seed=6), sim.make_stars(seed=17)
+
+        def light(i, stars):
+            px = self.a.sensor.frame(30, 1600, 15.0, sky=(4, 9, 6.3), stars=stars, sigma=1.2)
+            meta = {"exposure": 30, "iso": 1600, "temp": 15.0, "time": "2026:11:18 23:%02d:00" % i, "fnumber": 2.8,
+                    "focal": 24.0, "lens": "Simulator 24mm"}
+            folder = os.path.join(self.a.base, "lights")
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, "LIGHT_x_20261118-23%02d00_ISO1600_30s_f2.8_%04d.CR2" % (i, i)), "wb") as f:
+                f.write(sim.dng_bytes(px, meta))
+        for i in range(1, 5):
+            light(i, sim.sky_stars(field_a, i * 60.0))
+        light(5, [s for s in sim.sky_stars(field_a, 300.0) if s[2] < 2.5])   # Wolken: nur die hellsten Sterne
+        for i in (6, 7):
+            light(i, field_b)                                          # neu ausgerichtet
+        seen = []
+        res = gallery.check_lights(self.a.out, SESSION, lambda i, n, name: seen.append(i))
+        self.assertEqual(seen, list(range(1, 8)))
+        self.assertEqual((res["n"], res["fields"], res["other_field"]), (7, 2, 2))
+        self.assertTrue(res["first_other"].endswith("_0006.CR2"))
+        why = {f["name"][-8:-4]: f["why"] for f in res["frames"]}
+        self.assertTrue(why["0005"].startswith("wenige Sterne"), why)
+        self.assertEqual([why[k] for k in ("0001", "0002", "0003", "0004")], [None] * 4)
+        self.assertEqual(len(res["suggest"]), 3)
+        sm = gallery.session_summary(self.a.out, SESSION, None)
+        self.assertEqual((sm["check"]["main"], sm["check"]["stale"]), (5, False))
+        gallery.cull(self.a.out, res["suggest"])
+        self.assertTrue(gallery.session_summary(self.a.out, SESSION, None)["check"]["stale"])
 
 
 if __name__ == "__main__":

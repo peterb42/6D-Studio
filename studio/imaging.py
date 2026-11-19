@@ -192,11 +192,12 @@ def write_fits(path, data, cards):
     arr = np.asarray(data, np.float32) / FULL_SCALE
     if arr.ndim == 3:
         arr = arr.transpose(2, 0, 1)                 # FITS-Achsen: Spalten, Zeilen, Ebenen
+    arr = arr[..., ::-1, :]                          # FITS-Standard: erste Zeile = unten (wie Siril RAWs einliest)
     shape = arr.shape[::-1]
     head = [_card("SIMPLE", True, "FITS"), _card("BITPIX", -32, "32-Bit-Gleitkomma"),
             _card("NAXIS", len(shape))]
     head += [_card("NAXIS%d" % (i + 1), n) for i, n in enumerate(shape)]
-    head += [_card("BZERO", 0.0), _card("BSCALE", 1.0), _card("ROWORDER", "TOP-DOWN", "erste Zeile = oben")]
+    head += [_card("BZERO", 0.0), _card("BSCALE", 1.0), _card("ROWORDER", "BOTTOM-UP", "erste Zeile = unten")]
     head += [_card(k, v, c) for k, v, c in cards if v is not None]
     text = "".join(head) + "END".ljust(80)
     text += " " * (-len(text) % 2880)
@@ -223,11 +224,43 @@ def read_fits(path):
     arr = arr * header.get("BSCALE", 1.0) + header.get("BZERO", 0.0)
     if header["BITPIX"] < 0:
         arr *= FULL_SCALE                            # 0…1 → ADU
-    if header.get("ROWORDER", "TOP-DOWN") == "BOTTOM-UP":
+    if header.get("ROWORDER", "BOTTOM-UP") != "TOP-DOWN":      # ohne Angabe: FITS-Standard (unten zuerst)
         arr = arr[..., ::-1, :]
     if arr.ndim == 3:
         arr = np.ascontiguousarray(arr.transpose(1, 2, 0))
     return arr.astype(np.float32), header
+
+
+def to_bottom_up(path):
+    """Ältere FITS von 6D Studio (ROWORDER = TOP-DOWN) an Ort und Stelle in den Standard drehen – Siril liest Zeile
+    für Zeile von unten und dreht nicht selbst; ein Master läge sonst gespiegelt über den Lights. Kopf und Werte
+    bleiben sonst gleich, ohne numpy. → True, wenn gedreht wurde."""
+    header, pos = read_fits_header(path)
+    if header.get("ROWORDER") != "TOP-DOWN":
+        return False
+    width, height = header["NAXIS1"], header["NAXIS2"]
+    planes = header.get("NAXIS3", 1) if header["NAXIS"] >= 3 else 1
+    row = width * abs(header["BITPIX"]) // 8
+    with open(path, "rb") as f:
+        head = bytearray(f.read(pos))
+        data = f.read(row * height * planes)
+        rest = f.read()
+    for i in range(0, len(head), 80):
+        if head[i:i + 8].decode("ascii", "replace").strip() == "ROWORDER":
+            head[i:i + 80] = _card("ROWORDER", "BOTTOM-UP", "erste Zeile = unten").encode("ascii")
+            break
+    out = bytearray()
+    for p in range(planes):
+        plane = data[p * row * height:(p + 1) * row * height]
+        for r in range(height - 1, -1, -1):
+            out += plane[r * row:(r + 1) * row]
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(head)
+        f.write(out)
+        f.write(rest)
+    os.replace(tmp, path)
+    return True
 
 
 # ---------------------------------------------------------------- Bilder laden

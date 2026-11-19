@@ -1,6 +1,6 @@
 # Nachbearbeitung: Bildverwaltung, PixInsight, Siril und andere Programme
 
-Stand 19.11.2026. Teil 1 fasst die Recherche zu den üblichen Programmen zusammen, Teil 2 zeigt, was PixInsight
+Stand 19.11.2026 (Siril 1.4.5 geprüft). Teil 1 fasst die Recherche zu den üblichen Programmen zusammen, Teil 2 zeigt, was PixInsight
 (WBPP) und Siril tatsächlich erwarten, Teil 3 beschreibt die Bildverwaltung von 6D Studio.
 
 ## 1. Der übliche Ablauf und die Programme
@@ -63,7 +63,13 @@ Nachgelesen im Quelltext von WBPP, der mit PixInsight 1.9.6 ausgeliefert wird
 
 Oben **Anzeige: Bilder** (Taste <kbd>B</kbd>). Links die Quellen, rechts die Bilder als Vorschau.
 
-**Quellen:**
+**Ablagen:** Die Bildverwaltung zeigt immer die Kamera-Ablage (`~/Pictures/6D-Tethering`) **und** die
+Simulator-Ablage (`…/Simulator`) – die des laufenden Studios zuerst. So sind die Live-Stacks der Kamera auch im
+Simulator-Studio zu sehen.
+
+**Quellen je Ablage:**
+- **Ergebnisse** – alle Live-Stacks und Siril-Ergebnisse (auch fertig entwickelte JPEG/TIFF) aller Sitzungen,
+  neueste zuerst.
 - **Sitzungen** `Astro/<Nacht>_<Objekt>/` mit Lights, Darks, Bias, Flats, Dark-Flats, Live-Stack,
   Siril-Ergebnissen und Aussortierten.
 - **Einzelaufnahmen** (Auslösen, Bulb) aus dem Fotoordner, je Nacht.
@@ -71,26 +77,67 @@ Oben **Anzeige: Bilder** (Taste <kbd>B</kbd>). Links die Quellen, rechts die Bil
 
 RAW und JPEG gleichen Namens sind ein Eintrag, ebenso FITS und PNG eines Live-Stacks.
 
+### Nachbearbeitung in drei Schritten
+
+Ist eine Sitzung gewählt, steht oben ihr Ablauf. Ein Haken zeigt, was erledigt ist.
+
+1. **Prüfen**
+   - Anzeige: wie viele Lights; welche Kalibrierbilder passen (Darks, Bias, Flats, Dark-Flats; nicht passende
+     werden genannt); Hinweise auf Fehlendes (z. B. „Keine Flats – Vignettierung bleibt“).
+   - **Lights prüfen** (etwa 0,5 s je Light) arbeitet wie der Live-Stack: Sterne finden, jedes Light einem
+     Bildfeld zuordnen. Das größte Feld ist das Hauptfeld.
+   - Gemeldet werden Lights mit **anderem Bildausschnitt**, mit wenigen Sternen (Wolken, Tau), mit unscharfen
+     Sternen (Wind, Fokus) oder mit hellem Himmel.
+   - **N aussortieren** verschiebt sie nach `verworfen/`, **zeigen** wählt sie im Raster aus.
+   - An der Beispielsitzung: 50 im Hauptfeld, 19 ab Bild 0038 mit anderem Ausschnitt.
+2. **Stapeln**
+   - **Mit Siril stapeln** legt den Arbeitsordner an und lässt Siril (`siril-cli`) im Hintergrund laufen.
+     Darüber erscheint der Fortschritt mit Schritt (z. B. „Schritt 7/9: Lights ausrichten · 71 %“).
+   - Danach werden die Zwischenbilder (`process/`) gelöscht, bei 69 Lights der 6D rund 40 GB. Masters und
+     Ergebnis bleiben.
+   - Alternativ **Für PixInsight** (WBPP-Ordner) oder **Nur Skript** (zum Ausführen in Siril selbst).
+3. **Fertig entwickeln**
+   - Für jeden Stapel der Sitzung (Siril-Ergebnis oder Live-Stack). Siril entfernt Hintergrund und Gradient
+     (`subsky`), den Grünstich (`rmgreen`), streckt automatisch (`autostretch`) und speichert JPEG und
+     16-Bit-TIFF als `<Stapel>_fertig` daneben.
+   - Das fertige Bild öffnet sich gleich groß. **Öffnen …** gibt den Stapel an Siril oder PixInsight zur
+     Feinarbeit.
+
+In der Gruppe „Ergebnisse“ geht „Fertig entwickeln“ auch über die Leiste: ein FITS auswählen.
+
 **Ansehen:** Vorschaubilder entstehen beim ersten Mal und liegen in `.vorschau/thumbs/`:
 - JPEG und PNG in etwa 0,1 s;
 - RAW ohne JPEG über sips (macOS) in etwa 0,7 s;
-- FITS-Masters gestreckt über numpy in etwa 0,3 s.
+- FITS über numpy in etwa 0,3 s.
 
 Doppelklick zeigt ein Bild groß. Darunter stehen Aufnahmedaten aus EXIF bzw. FITS-Kopf: Zeit, ISO, Belichtung,
 Sensortemperatur, Brennweite, Blende, Objektiv, Dateien.
 
 **Auswählen:** Klick wählt aus oder ab, Shift-Klick einen Bereich, „Alle“ alles.
 
-**Aktionen:**
+**Aktionen der Leiste:**
 
 | Aktion | Was passiert |
 |---|---|
+| **Fertig entwickeln** | bei gestapelten FITS (Gruppe „Ergebnisse“, Live-Stack, Siril-Ergebnisse) – wie Schritt 3 |
 | **Öffnen mit …** | in einem installierten Programm (gesucht in `/Applications`, auch eine Ebene tiefer wie bei PixInsight). Angeboten wird nur, was mit den Dateien umgehen kann; bei RAW+JPEG bekommt z. B. Starry Landscape Stacker das JPEG. |
 | **Finder** | zeigt die Datei im Finder |
 | **Aussortieren / Zurücklegen** | verschiebt Bilder (RAW und JPEG) nach `<Sitzung>/verworfen/<Ordner>/` und zurück. Export und Siril lassen sie weg. Nichts wird gelöscht. |
 | **In Sitzung übernehmen …** | Einzelaufnahmen als Light (oder Kalibrierbild) einer Sitzung: verschieben, nach der Namenskonvention benennen (Zeit, ISO, Belichtung und Blende aus dem EXIF), in `serie.csv` eintragen (Spalte „geladen“: „übernommen“). Die Nummern laufen mit den Serien fort. |
-| **Für PixInsight** | legt `<Sitzung>/pixinsight/` an (siehe unten) und zeigt es im Finder |
-| **Siril …** | legt `<Sitzung>/siril/` mit Skript an; mit installiertem Siril „In Siril vorverarbeiten“ im Hintergrund, Fortschritt in der Leiste, Ergebnis `ergebnis_<Gesamtzeit>s.fit` erscheint links unter „Siril-Ergebnisse“ |
+
+### FITS von unten nach oben (wie Siril)
+
+Siril liest RAWs Zeile für Zeile **von unten** ein (`image_formats_libraries.c`, `for row = height-1 … 0`) und
+dreht FITS beim Laden nicht – `ROWORDER` ist für Siril nur eine Angabe. 6D Studio schrieb FITS bis 19.11.2026
+von oben (`ROWORDER = TOP-DOWN`): In Siril standen Live-Stacks deshalb auf dem Kopf, und ein Master aus der
+Bibliothek hätte gespiegelt über den Lights gelegen (Hotpixel und Staub an der falschen Stelle).
+
+- **Jetzt:** Daten von unten, `ROWORDER = BOTTOM-UP`, `BAYERPAT` wie von oben gesehen – genau Sirils Standard.
+  Geprüft mit Siril 1.4.5: Ein Dark, mit 6D Studio geschrieben, liegt Pixel für Pixel wie Sirils eigene
+  Umwandlung desselben CR2.
+- **Ältere Dateien** liest 6D Studio weiter richtig. Bevor Siril sie benutzt (Master im Skript, Live-Stack beim
+  Fertig-Entwickeln), dreht das Studio sie an Ort und Stelle (`imaging.to_bottom_up`). Kopf und Werte bleiben
+  dabei gleich.
 
 ### Für PixInsight: `<Sitzung>/pixinsight/`
 
@@ -125,7 +172,8 @@ In WBPP: **+ Directory** → `pixinsight` wählen, bei den Lights „CFA images�
 ### Siril: `<Sitzung>/siril/`
 
 - `lights/ darks/ flats/ biases/ darkflats/` mit den passenden RAWs (verknüpft, ohne JPEGs) und
-  `vorverarbeitung.ssf`. Das Skript ist an `OSC_Preprocessing.ssf` angelehnt (`requires 1.2.0`).
+  `vorverarbeitung.ssf`. Das Skript folgt `OSC_Preprocessing.ssf` aus Siril 1.4 (`requires 1.3.4`, `-32b`); vor
+  jedem Schritt steht `# >> <Schritt>` für die Fortschrittsanzeige.
 - **Fehlende Kalibrierbilder:**
   - Mit Dark-Flats werden die Flats mit ihnen statt mit dem Bias kalibriert.
   - Fehlen Rohbilder eines Typs, nimmt das Skript die Rohbilder des passenden Masters aus einer anderen Sitzung,
@@ -133,13 +181,19 @@ In WBPP: **+ Directory** → `pixinsight` wählen, bei den Lights „CFA images�
   - Fehlen Bias und Dark ganz, dient der Schwarzwert als Offset (`-bias="=2047"`).
 - Frühere Ergebnisse (`ergebnis_*.fit`) bleiben beim Neuanlegen erhalten.
 
-### Noch nicht geprüft
+### Geprüft und offen
 
-- Siril selbst: Es ist auf diesem Mac nicht installiert. Getestet sind das Skript, der Arbeitsordner und der Ablauf
-  mit einem Ersatzprogramm, das wie `siril-cli` Zeilen ausgibt und ein Ergebnis schreibt.
-- WBPP mit dem Export ist nicht in PixInsight gelaufen. Geprüft ist die Typ-Erkennung mit der Regel aus dem
-  WBPP-Quelltext.
-- „Öffnen mit“ startet die Programme mit `open -a`; ausprobiert ist das in den Tests nur mit einem Ersatz.
+- **Geprüft mit Siril 1.4.5:**
+  - Stapeln von 8 echten Lights mit Darks und Bias über das Studio: 21 s; alle 9 Schritte erkannt (Siril meldet
+    auf Deutsch, die Schrittmarken im Skript sind sprachunabhängig); 5,1 GB Zwischenbilder gelöscht.
+  - Fertig entwickeln eines Siril-Ergebnisses und eines älteren Live-Stacks (dieser wird dabei gedreht), je
+    unter 2 s.
+  - Die Meldung „error: no suitable data in src fits“ nach `subsky` ist harmlos (interne Kopie in Siril); das
+    Ergebnis ist richtig.
+- **Offen:**
+  - WBPP mit dem Export ist noch nicht in PixInsight gelaufen. Geprüft ist die Typ-Erkennung mit der Regel aus
+    dem WBPP-Quelltext.
+  - „Öffnen mit“ startet die Programme mit `open -a`; ausprobiert in den Tests nur mit einem Ersatz.
 
 ## Quellen
 

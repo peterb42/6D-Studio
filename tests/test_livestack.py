@@ -258,10 +258,34 @@ class TestRechnung(unittest.TestCase):
         back, h = imaging.read_fits(os.path.join(d, "c.fits"))
         self.assertEqual(back.shape, (4, 6))
         self.assertLess(float(np.abs(back - cfa).max()), 0.01)
-        self.assertEqual((h["ISOSPEED"], h["EXPTIME"], h["ROWORDER"]), (1600, 30.0, "TOP-DOWN"))
+        self.assertEqual((h["ISOSPEED"], h["EXPTIME"], h["ROWORDER"]), (1600, 30.0, "BOTTOM-UP"))
+        _, pos = imaging.read_fits_header(os.path.join(d, "c.fits"))
+        with open(os.path.join(d, "c.fits"), "rb") as f:          # wie Siril: erste gespeicherte Zeile = unten
+            f.seek(pos)
+            first = np.frombuffer(f.read(6 * 4), ">f4") * imaging.FULL_SCALE
+        self.assertLess(float(np.abs(first - cfa[-1]).max()), 0.01)
         rgb = np.random.default_rng(0).uniform(0, 9000, (5, 7, 3)).astype(np.float32)
         imaging.write_fits(os.path.join(d, "r.fits"), rgb, [])
         self.assertLess(float(np.abs(imaging.read_fits(os.path.join(d, "r.fits"))[0] - rgb).max()), 0.01)
+
+    def test_alte_fits_werden_in_den_standard_gedreht(self):
+        d = tempfile.mkdtemp()
+        rgb = np.random.default_rng(1).uniform(0, 9000, (5, 7, 3)).astype(np.float32)
+        p = os.path.join(d, "alt.fits")
+        imaging.write_fits(p, rgb, [("ISOSPEED", 800, "ISO")])
+        with open(p, "rb") as f:                                       # so schrieb 6D Studio bis 19.11.2026
+            raw = bytearray(f.read())
+        _, pos = imaging.read_fits_header(p)
+        head = raw[:pos].replace(b"'BOTTOM-UP'", b"'TOP-DOWN' ")
+        planes = np.frombuffer(bytes(raw[pos:pos + rgb.size * 4]), ">f4").reshape(3, 5, 7)[:, ::-1, :]
+        with open(p, "wb") as f:
+            f.write(bytes(head) + planes.astype(">f4").tobytes() + bytes(raw[pos + rgb.size * 4:]))
+        self.assertLess(float(np.abs(imaging.read_fits(p)[0] - rgb).max()), 0.01)  # alt: richtig gelesen
+        self.assertTrue(imaging.to_bottom_up(p))
+        self.assertFalse(imaging.to_bottom_up(p))                      # schon gedreht
+        back, h = imaging.read_fits(p)
+        self.assertEqual((h["ROWORDER"], h["ISOSPEED"]), ("BOTTOM-UP", 800))
+        self.assertLess(float(np.abs(back - rgb).max()), 0.01)
 
 
 def write_master(lib, kind, iso, exposure, temp, date, shape=(8, 12), fnumber=None, focal=None):
