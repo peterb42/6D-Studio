@@ -1,9 +1,12 @@
 # 6D Studio
 
 WLAN-Fernsteuerung für die **Canon EOS 6D** vom Mac aus, ohne EOS Utility – gebaut für Nachtaufnahmen
-des Sternenhimmels: Livebild mit 5×/10×-Lupe der Kamera, Schärfe-Messung am Stern, Bulb Start/Stopp mit Timer,
-ISO/Blende/Zeit, automatischer RAW-Download, Serien für Stacking, **Live-Stack** mit Dark-Optimierung und eine
-**Dark-/Bias-Bibliothek** mit geführter Aufnahme.
+des Sternenhimmels:
+- Livebild mit 5×/10×-Lupe der Kamera, Schärfe-Messung am Stern, Fokusantrieb
+- Bulb Start/Stopp mit Timer, ISO/Blende/Zeit, automatischer Download
+- Serien für Stacking (Lights, Darks, Bias, Flats, Dark-Flats) mit Siril-gerechter Ablage
+- **Live-Stack** mit Dark-Optimierung, Ausrichtung auch bei Bildfelddrehung und **Bildanalyse** mit Empfehlungen
+- **Dark-/Bias-Bibliothek** mit geführter Aufnahme und automatischer Auswahl passender Masters
 
 ```
  Browser ──HTTP :8066──┐
@@ -11,7 +14,7 @@ ISO/Blende/Zeit, automatischer RAW-Download, Serien für Stacking, **Live-Stack*
  gphoto2 ─ptpip:127.0.0.1┘   hält EINE Verbindung offen
 ```
 
-## Benutzen
+## Schnellstart
 
 1. iPhone: Persönlicher Hotspot an, **„Maximale Kompatibilität“** an. Mac in den Hotspot.
 2. Kamera: Wi-Fi-Funktion → **Fernsteuerung (EOS Utility)**. Geht EOS Utility auf dem Mac auf → beenden.
@@ -21,19 +24,267 @@ ISO/Blende/Zeit, automatischer RAW-Download, Serien für Stacking, **Live-Stack*
 6d-fernsteuerung studio
 ```
 
-Die Oberfläche öffnet sich unter <http://127.0.0.1:8066>. Weitere Befehle: `6d-fernsteuerung` ohne Argument.
-Fotos landen in `~/Pictures/6D-Tethering`, das Protokoll in `~/.gphoto/6d-proxy.log`.
+Die Oberfläche öffnet sich unter <http://127.0.0.1:8066> – immer mit dem **Kamerabild**, zum Einrichten. Weitere
+Befehle: `6d-fernsteuerung` ohne Argument (siehe [Kommandozeile](#kommandozeile)). Erstes Mal? Siehe
+[Erstes Koppeln](#erstes-koppeln) und [Entwickeln](#entwickeln) (venv für Live-Stack und Bibliothek).
 
-**Serien für Stacking** (Lights, Darks, Bias, Flats, Dark-Flats) landen Siril-gerecht sortiert in
-`~/Pictures/6D-Tethering/Astro/<Nacht>_<Objekt>/{lights,darks,biases,flats,darkflats}/` mit `serie.csv` –
-Ablauf und Namenskonvention: [docs/stacking-und-kalibrierung.md](docs/stacking-und-kalibrierung.md).
+**Typische Nacht:** Livebild an → Stern anklicken, Doppelklick (Lupe 10×), scharfstellen → Objektiv auf MF →
+Live-Stack starten → Light-Serie starten → zwischendurch auf „Live-Stack“ schauen, Bildanalyse lesen → direkt
+danach Darks über „Geführt aufnehmen …“ (gleiche Temperatur) → Bias gern später zu Hause. Ausführlich:
+[docs/stacking-und-kalibrierung.md](docs/stacking-und-kalibrierung.md).
 
-**Live-Stack**: Karte „Live-Stack“ → Starten, dann eine Light-Serie. Jedes Light wird kalibriert (Bias, Dark mit
-Dark-Optimierung wie Siril, Hotpixel), an den Sternen ausgerichtet (auch die Bildfelddrehung vom Stativ) und
-gemittelt; oben auf „Live-Stack“ umschalten (Taste <kbd>V</kbd>). **Dark- & Bias-Bibliothek**: „Geführt
-aufnehmen …“ führt durch Vorbereitung, Aufnahme und Master-Erstellung; Masters liegen als FITS in
-`Astro/Bibliothek/` und werden passend zu ISO, Zeit und Sensortemperatur automatisch gewählt.
-Beides braucht numpy und rawpy aus der venv (siehe [Entwickeln](#entwickeln)).
+## Funktionen im Einzelnen
+
+Die Oberfläche hat drei Bereiche: die **Kopfzeile**, links das **große Bild** (Kamera oder Live-Stack) mit seinen
+Werkzeugen, rechts die **Karten** (Belichtung, Bulb, Serie, Live-Stack, Bibliothek, Letztes Foto, Protokoll).
+Einstellungen wie Serienfelder, Nachtmodus, Fadenkreuz und Live-Stack-Optionen merkt sich der Browser.
+
+### Kopfzeile
+
+| Element | Funktion |
+|---|---|
+| Verbindung | Grün mit Kameraname und IP, wenn die 6D angemeldet ist; sonst, was gerade passiert (Anmeldung dauert ~4 s). |
+| Modus | Stellung des Moduswahlrads (M, B, Av …) – wichtig für Bulb, Serien und den Assistenten. |
+| Fotos: … | Zielordner auf dem Mac. |
+| **Nachtmodus** (<kbd>N</kbd>) | Alles in Rot – schont die Dunkelanpassung der Augen. |
+
+### Großes Bild: Kamera oder Live-Stack
+
+**Anzeige: Kamera | Live-Stack** (<kbd>V</kbd>) schaltet, was das große Bild zeigt. Beim Öffnen ist es immer die
+Kamera; zum Live-Stack wechselt die Anzeige **nur** per Klick oder <kbd>V</kbd> – auch nicht beim Starten des
+Live-Stacks. Läuft ein Stapel, zeigt der Knopf die Bildanzahl („Live-Stack · 12“).
+
+#### Livebild und Scharfstellen
+
+| Element | Funktion |
+|---|---|
+| **Livebild** (<kbd>L</kbd>) | Livebild der Kamera ein/aus (mit Bildrate). Während einer Bulb-Belichtung pausiert es. |
+| **Lupe 1× / 5× / 10×** (<kbd>1</kbd> <kbd>5</kbd> <kbd>0</kbd>) | Die Vergrößerung der Kamera selbst – echte Sensordetails, nicht hochgerechnet. |
+| **Ausschnitt** ◀ ▲ ▼ ▶ (Pfeiltasten), **Mitte** | Verschiebt den vergrößerten Ausschnitt um ¼ seiner Breite; „Mitte“ zentriert und löscht das Ziel. |
+| **Fadenkreuz** | Blendet ein Fadenkreuz ein – zum Ausrichten und Einrahmen. |
+| Klick ins Bild (1×) | Setzt das **Ziel** (gelber gestrichelter Kreis), z. B. einen hellen Stern. |
+| Doppelklick | Lupe 10× an dieser Stelle; in der Lupe zurück auf 1×. |
+| **Grünes Quadrat** | Der Stern, an dem gemessen wird. Mit Ziel: der hellste Stern in dessen Nähe, und es bleibt bei ihm, solange er ähnlich hell ist. Ohne Ziel: der hellste Stern im ganzen Bild – springt bei ähnlich hellen Sternen. |
+| **Stern-Ø** | Durchmesser des gemessenen Sterns bei halber Helligkeit in Pixeln – je kleiner, desto schärfer. Daneben der Bestwert („best“), „überbelichtet“ bei gesättigtem Stern, und ein Verlauf (tiefer = schärfer). ↺ setzt Verlauf und Bestwert zurück. |
+| **Fokus** ⟪ ‹‹ ‹ · › ›› ⟫ (<kbd>,</kbd> <kbd>.</kbd> fein) | Fokusmotor des Objektivs, nah/fern in drei Schrittgrößen. Nur mit Livebild und **Objektivschalter auf AF**; bei MF lehnt die Kamera ab. Das Studio stellt nicht selbst scharf. |
+| **Anzeige hell**, **Kontrast** | Nur für die Anzeige (dunkle Sterne sichtbar machen), ändert nichts am Foto. |
+
+**So wird scharfgestellt:** Livebild an → hellen Stern anklicken → Doppelklick (10×) → mit ‹ › oder am Fokusring
+drehen, bis Stern-Ø am kleinsten ist → **vor der Serie Objektiv auf MF** (verstellt den Fokus nicht; auf AF
+versucht die 6D bei jeder Auslösung scharfzustellen und löst nachts oft nicht aus).
+
+#### Live-Stack-Anzeige
+
+| Element | Funktion |
+|---|---|
+| **Helligkeit**, **Schwarzpunkt**, **Auto** | Automatische Streckung wie Siril (Hintergrund auf 25 %, Schwarzpunkt Median − 2,8 · MAD); Auto stellt die Vorgabe wieder her. |
+| **Hintergrund ebnen** (Vorgabe: an) | Gleicht Gradient (Horizont, Lichtverschmutzung) und Vignettierung für die Anzeige aus – sonst schneidet die Streckung dunkle Ecken schwarz ab. Helle Bereiche (Milchstraße, Lampen) bleiben erhalten. |
+| **Speichern**, **Öffnen** | Speichert den Stapel jetzt (FITS + PNG) bzw. öffnet das zuletzt gespeicherte PNG. |
+
+Alle Regler wirken nur auf Anzeige und PNG – das FITS bleibt linear.
+
+### Belichtung
+
+**ISO**, **Blende**, **Zeit**: Auswahl genau der Werte, die die Kamera gerade anbietet; Änderungen gehen sofort an
+die Kamera, Änderungen an der Kamera erscheinen hier. Im Modus B bestimmt Start/Stopp die Zeit. Meldet das Objektiv
+keine Blende (manuelles Objektiv), wird sie am Objektiv eingestellt.
+
+### Bulb-Aufnahme und Auslösen
+
+- **Start/Stopp** (Moduswahlrad auf **B**): Langzeitbelichtung mit laufender Uhr und Fortschrittsbalken.
+- **Auto-Stopp nach** min/s oder per Vorwahl (manuell, 15 s … 8 min): Das Studio beendet die Belichtung selbst;
+  „manuell“ belichtet bis Stopp.
+- **Auslösen**: ein Bild mit der Zeit der Kamera (nicht im Modus B).
+- Während einer Serie sind beide gesperrt.
+
+### Serie für Stacking
+
+Nimmt eine Folge gleichartiger Bilder auf und legt sie Siril-gerecht ab.
+
+| Feld | Funktion |
+|---|---|
+| **Bildtyp** | Light, Dark, Bias, Flat, Dark-Flat – mit Hinweis, wie die Kamera stehen muss (Tabelle unten). |
+| **Objekt** | Name für Ordner und Dateien, z. B. „Milchstraße“. |
+| **Anzahl** | 1–999 Bilder. |
+| **Belichtung** | Nur im Modus B (Lights, Darks); im Modus M gilt die Zeit der Kamera, sie wird angezeigt. |
+| **Pause** | Wartezeit zwischen den Bildern (0–600 s). |
+| **Auf den Mac** | alles · nur RAW · nur JPEG (schnell) · nichts (bleibt auf der Karte). Bei RAW+JPEG spart „nur RAW“ für den Live-Stack die halbe Wartezeit. |
+| **Serie starten** / **Nach diesem Bild stoppen** | Zweiter Klick auf Stopp: sofort (eine laufende Bulb-Belichtung wird beendet und gespeichert). |
+
+| Bildtyp | Moduswahlrad | Zeit |
+|---|---|---|
+| Light | B (Zeit im Studio) oder M | wie eingestellt |
+| Dark | wie die Lights, Deckel drauf, Sucher abdecken | wie die Lights |
+| Bias | M | Studio stellt die kürzeste Zeit (1/4000) ein |
+| Flat | Av | Kamera bestimmt die Zeit; Fokus und Blende wie bei den Lights |
+| Dark-Flat | M | Zeit der Flats, Deckel drauf |
+
+**Ablage:** `~/Pictures/6D-Tethering/Astro/<Nacht>_<Objekt>/{lights,darks,biases,flats,darkflats}/` – die
+„Nacht“ wechselt mittags, Bilder nach Mitternacht landen also im Ordner des Abends. Dateinamen:
+`LIGHT_Milchstrasse_20261118-231405_ISO3200_30s_f2.8_0001.CR2`. Jede Datei – auch die, die auf der Karte bleibt –
+steht in `serie.csv` (Typ, Nummer, Kameradatei, Zeiten, ISO, Blende, geladen ja/nein). Die Nummern laufen fort,
+auch wenn eine neue Serie startet, während noch Bilder der vorigen geladen werden.
+
+Lights merkt sich das Studio (ISO, Zeit, Sensortemperatur) – für den Dark-Assistenten und die Bibliothek. Läuft
+ein Live-Stack, kommt jedes geladene Light hinein.
+
+### Live-Stack
+
+Stapelt jedes Light, das auf den Mac kommt (Serie oder einzelne Aufnahme), sofort zu einem rauschärmeren Bild.
+Angelehnt an **OpenLiveStacker** und **Siril**. Braucht numpy und rawpy (siehe [Entwickeln](#entwickeln)).
+
+| Element | Funktion |
+|---|---|
+| **Bias**, **Dark** | Automatisch (passend zu den Lights aus der Bibliothek), Keins, oder ein bestimmter Master. |
+| **Dark-Optimierung** | Skaliert das Wärmesignal des Darks mit dem Faktor k (0–4), der das Rauschen am kleinsten macht – gleicht Temperatur- und Zeitunterschiede aus (Siril `-opt`). |
+| **Hotpixel-Filter je Bild** | Entfernt einzelne helle Pixel, die die Hotpixel-Karte nicht kennt, und Treffer kosmischer Strahlung. |
+| **Satelliten und Flugzeuge entfernen** | Verwirft je Pixel den hellsten Wert (ab 3 Bildern). |
+| **Live-Stack starten** / **Beenden & speichern** / **Neu beginnen** | Neu beginnen leert den Stapel; das nächste Bild wird die neue Referenz. |
+| Statuszeile | Bilder, Gesamtbelichtung, verworfene Bilder, RAW/JPEG; was gerade gerechnet wird. |
+| Kalibrierzeile | Verwendeter Bias und Dark, Anzahl Hotpixel, aktuelles k, Temperatur der Lights. |
+| Tabelle | Die letzten 8 Bilder: Sterne (zugeordnet/gefunden), k, FWHM, Drehung, Restfehler der Ausrichtung (±px); verworfene mit Grund. |
+| **Nachstacken** | Stapelt die Lights einer vorhandenen Sitzung – auch ohne Kamera, z. B. mit neuen Darks. |
+
+**Je RAW:**
+1. Bias abziehen; ohne Master-Bias den Schwarzwert der Kamera.
+2. Dark mal k abziehen.
+3. Hotpixel aus der Hotpixel-Karte des Darks durch gleichfarbige Nachbarn ersetzen.
+4. Superpixel-Debayer (halbe Auflösung, 2748 × 1835).
+5. Bis zu 100 Sterne finden und per Dreiecksvergleich zuordnen.
+6. **Homographie** über alle Sterne berechnen: Ein Weitwinkel bildet die Bildfelddrehung vom Stativ projektiv ab.
+   An der 6D mit 24 mm liegen die Sterne damit am Rand 0,2 px genau statt 7 px daneben.
+7. Verzerren und mitteln.
+
+JPEGs werden nur ausgerichtet und gemittelt (nicht linear, keine Kalibrierung). Bilder mit weniger als 6
+zugeordneten Sternen werden verworfen (Wolken, Verwackeln).
+
+**Ergebnis:** `Astro/<Nacht>_<Objekt>/livestack/LIVESTACK_<Zeit>_<n>x<Zeit>_raw.fits` (linear, 32 Bit, liest Siril
+direkt) und `.png` (wie angezeigt). Gespeichert wird bei „Beenden & speichern“ und „Speichern“.
+
+#### Bildanalyse
+
+Prüft den Stapel alle 10 Bilder, am Ende und per **Bild prüfen**. Jeder Befund nennt Messwert und Empfehlung:
+✓ in Ordnung · i Hinweis · ! Verbesserung möglich.
+
+| Prüfung | Gemessen | Empfehlung, z. B. |
+|---|---|---|
+| Bias | Master vorhanden? Anzahl Bilder | 30–50 Bias bei der ISO der Lights |
+| Dark – Temperatur | Darks gegen Lights (Sensortemperatur aus der CR2), ab 5 °C Unterschied | Darks direkt nach den Lights – die 6D heizt sich im Livebild um 10 °C auf |
+| Dark – Faktor | k am Anschlag (0 oder 4)? | Darks passen nicht, neu aufnehmen |
+| Dark – Wärmesignal | Wärmesignal im Light gegen das Rauschen | bei kurzer Belichtung wirkt der Dark v. a. als Hotpixel-Karte, die Anzahl zählt |
+| Dark – Rauschgrenze | ab wie vielen Bildern das Rauschen des Masters den Stapel begrenzt | mehr Darks – die Grenze wächst mit ihrer Anzahl |
+| Rauschgewinn | Rauschen im Stapel gegen Einzelbild/√N | festes Muster („Walking Noise“): passende Kalibrierung, Dithering |
+| Hintergrund | Vignettierung, Gradient, helle Bereiche, Überbelichtung | Flats; Lichtquelle oder Wolke |
+| Sterne | Breite und Form in Mitte und Rand, Stapel gegen Einzelbild, Restfehler der Ausrichtung | Abblenden (Koma), Stativ, Wind |
+| Bilder | verworfene, Bilder mit Wolken/Streulicht, Temperaturverlauf | Bilder aussortieren |
+
+### Dark- & Bias-Bibliothek
+
+Masters (gemittelte Kalibrierbilder) als FITS in `Astro/Bibliothek/{bias,darks}/`, z. B.
+`MASTER-DARK_ISO3200_30s_18C_n20_20261118-2314.fits`. Die Tabelle zeigt Typ, ISO, Zeit, Temperatur, Anzahl und
+Datum; **✓** markiert, was zu den letzten Lights passt, **✕** löscht einen Master.
+
+**Automatische Auswahl** (Live-Stack „Automatisch“): Bias mit gleicher ISO, der neueste. Dark mit gleicher ISO,
+zuerst gleiche Zeit (±5 %), dann nächste Temperatur, dann der neueste; mit Dark-Optimierung auch Darks mit der
+0,5- bis 4-fachen Zeit. Kamera und Bildgröße müssen passen.
+
+**Geführt aufnehmen …**
+
+1. **Was?** Bias oder Darks – mit Erklärung, wann und wie viele.
+2. **Kamera vorbereiten.** Automatisch geprüft:
+   - Moduswahlrad (Bias: M, Darks: B oder M);
+   - ISO wie die letzten Lights;
+   - Zeit wie die Lights. **Darks unter 1 s sperrt der Assistent** – das wären nur Bias, typisch nach einer
+     Bias-Serie mit 1/4000.
+
+   Zum Abhaken: Objektivdeckel drauf, Sucher abgedeckt, Rauschreduzierung bei Langzeitbelichtung aus, RAW.
+3. **Aufnehmen:** Anzahl (Bias 40, Darks 20) und im Modus B die Zeit (vorbelegt mit der Zeit der Lights), mit
+   Dauer und Download-Zeit (~25 s je RAW über den Hotspot).
+4. **Master erstellen** startet von selbst, sobald alle RAWs auf dem Mac sind. Das Verfahren: κσ-Clipping in zwei
+   Durchgängen, verwirft Ausreißer wie kosmische Treffer auch bei wenigen Bildern (ab 3).
+
+**Aus Ordner:** baut Masters aus Darks/Bias, die schon in einem Sitzungsordner liegen (z. B. von der Karte
+kopiert) – gruppiert nach ISO und Zeit, je Gruppe ab 3 Bildern.
+
+### Letztes Foto
+
+Vorschau des zuletzt geladenen Fotos (Klick: groß), Größe und Zeit, darunter die vorigen 8 und der Fortschritt
+laufender Downloads. **Fotos nach der Aufnahme automatisch auf den Mac laden** gilt für Einzelbilder und Bulb;
+Serien haben ihre eigene Einstellung.
+
+### Protokoll
+
+Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) – auch in
+`~/.gphoto/6d-proxy.log`.
+
+### Tastenkürzel
+
+| Taste | Funktion |
+|---|---|
+| <kbd>L</kbd> | Livebild ein/aus |
+| <kbd>1</kbd> <kbd>5</kbd> <kbd>0</kbd> | Lupe 1×, 5×, 10× |
+| Pfeiltasten | Ausschnitt der Lupe verschieben |
+| <kbd>,</kbd> <kbd>.</kbd> | Fokus fein nah / fern |
+| <kbd>V</kbd> | Anzeige Kamera ↔ Live-Stack |
+| <kbd>N</kbd> | Nachtmodus |
+
+### Ordner und Dateien
+
+| Pfad | Inhalt |
+|---|---|
+| `~/Pictures/6D-Tethering/` | Einzelbilder (`IMG_xxxx.CR2/.JPG`), Vorschauen in `.vorschau/` |
+| `…/Astro/<Nacht>_<Objekt>/` | Serien (`lights/`, `darks/`, `biases/`, `flats/`, `darkflats/`), `serie.csv`, `livestack/` |
+| `…/Astro/Bibliothek/` | Master-Bias und Master-Darks (FITS) |
+| `…/Simulator/` | Fotos des Simulators |
+| `~/.gphoto/6d-proxy.log` | Protokoll des Studios |
+
+## Kommandozeile
+
+`6d-fernsteuerung <befehl>` – über WLAN laufen die gphoto2-Befehle durch das Studio (ptpip:127.0.0.1).
+
+| Befehl | Funktion |
+|---|---|
+| `studio` | Studio starten und die Oberfläche öffnen |
+| `stop` | Studio beenden (danach an der Kamera die Fernsteuerung neu starten) |
+| `wlan [ip]` | WLAN-Modus einrichten: Kamera im Netz suchen, Studio starten |
+| `usb` | Zurück auf USB-Kabel |
+| `status` | Zustand der WLAN-Verbindung |
+| `check`, `settings` | Kamera-Infos bzw. ISO, Blende, Zeit, Weißabgleich, Bildqualität, Akku |
+| `options <name>`, `set <name> <wert>` | Mögliche Werte einer Einstellung bzw. ändern, z. B. `set iso 800` |
+| `shoot`, `tether` | Ein Foto auslösen und laden bzw. jedes an der Kamera ausgelöste Foto laden |
+| `liveview`, `preview` | Livebild in einem Fenster (ffplay) bzw. ein einzelnes Livebild |
+| `shell` | Interaktive gphoto2-Shell |
+| `sim [optionen]`, `sim-cmd <befehl>`, `sim-stop` | Simulierte 6D – siehe [Simulator](#ohne-kamera-der-simulator) |
+
+## Änderungen
+
+**19.11.2026**
+- **Bildanalyse** im Live-Stack mit Empfehlungen für Darks, Bias und Flats (`studio/analysis.py`).
+- Ausrichtung per **Homographie** – keine Doppelsterne mehr am Rand bei Weitwinkel.
+- **Hintergrund ebnen** in der Stack-Anzeige – keine schwarz abgeschnittenen Ecken mehr.
+- Dark-Optimierung rechnet ohne die Hotpixel der Hotpixel-Karte, k bis 4. Vorher trieben die Hotpixel k an den
+  Anschlag 2.
+- Das Studio startet immer mit dem Kamerabild; zum Live-Stack nur per Klick oder <kbd>V</kbd>.
+- Das grüne Quadrat (Stern-Messung) bleibt beim angeklickten Stern statt zu springen.
+- Fortlaufende Bildnummern, auch wenn eine Serie startet, während die vorige noch lädt.
+
+**18.11.2026**
+- Assistent und Master-Erstellung lehnen Darks unter 1 s ab (das wären Bias).
+- **Live-Stack** mit Dark-Optimierung wie Siril; **Dark-/Bias-Bibliothek** mit geführter Aufnahme.
+- **Serien für Stacking** mit Namenskonvention und `serie.csv`; Ablauf für Kalibrierbilder.
+- Entwicklungsumgebung mit venv.
+
+**17.11.2026**
+- 6D Studio: WLAN-Fernsteuerung mit Livebild, Lupe, Fokus, Bulb, Download.
+- Kamera-Simulator für die Entwicklung ohne Kamera.
+
+## Grenzen und offene Punkte
+
+- **Fokusantrieb:** an der echten 6D noch nicht ausprobiert – Richtung und Schrittgrößen sind angenommen.
+- **Flats und Dark-Flats:** Serien gibt es, aber nicht im Live-Stack und nicht in der Bibliothek.
+- **Live-Stack:** Der Live-Stack mittelt nur (außer „Satelliten entfernen“) – für das Endbild die RAWs in Siril
+  stapeln. Der Vordergrund verschmiert, weil auf die Sterne ausgerichtet wird.
+- **Uhrzeit:** Datum und Uhrzeit der Masters kommen aus der Kamera – ihre Uhr sollte stimmen.
 
 ## Projekt
 
@@ -42,21 +293,23 @@ Beides braucht numpy und rawpy aus der venv (siehe [Entwickeln](#entwickeln)).
 | `studio/6d-studio.py` | Server: PTP/IP zur Kamera, Vermittler für gphoto2, Web-API |
 | `studio/6d-studio.html` | Bedienoberfläche (HTML/CSS/JS, keine Abhängigkeiten) |
 | `studio/astro.py` | Serien für Stacking: Bildtypen, Namenskonvention, `serie.csv` |
-| `studio/livestack.py` | Live-Stack: Kalibrierung mit Dark-Optimierung, Sterne finden, Ausrichten (Dreiecke), Mitteln, Anzeige |
+| `studio/livestack.py` | Live-Stack: Kalibrierung mit Dark-Optimierung, Sterne finden, Ausrichten (Dreiecke + Homographie), Mitteln, Anzeige |
+| `studio/analysis.py` | Bildanalyse des Stapels: Kalibrierung, Rauschgewinn, Hintergrund, Sterne – mit Empfehlungen |
 | `studio/calib.py` | Dark-/Bias-Bibliothek: Masters als FITS, automatische Auswahl, Master aus RAWs (κσ-Clipping) |
 | `studio/imaging.py` | RAW (rawpy), JPEG, FITS, PNG; EXIF inkl. Sensortemperatur der 6D |
 | `bin/6d-fernsteuerung` | Kommandozeilen-Werkzeug (zsh) – startet/stoppt das Studio, gphoto2-Befehle |
-| `sim/sim6d.py` | **Simulierte 6D** – PTP/IP wie die echte Kamera, Sternenhimmel-Livebild, Bulb, Download |
+| `sim/sim6d.py` | **Simulierte 6D** – PTP/IP wie die echte Kamera, Sternenhimmel-Livebild, Bulb, Download, RAWs |
 | `tools/ptpip-handshake.py` | Anmeldung/Kopplung direkt an der Kamera testen (90 s Wartezeit) |
 | `tools/ptp-caps.py` | Unterstützte Befehle und Eigenschaften auslesen (über das laufende Studio) |
 | `tools/ptp-probe.py` | Einzelne PTP-Befehle über das Studio schicken |
 | `tools/legacy/` | Erster Vermittler, ersetzt durch `6d-studio` |
 | `tests/` | Tests ohne Kamera, auch Studio ↔ Simulator (`.venv/bin/python -m unittest discover -s tests`, ~50 s) |
 | `docs/canon-6d-ptpip.md` | **Alles, was wir über das Protokoll der 6D herausgefunden haben** |
-| `docs/stacking-und-kalibrierung.md` | Serien, Namenskonvention, Ablauf für Lights/Darks/Bias/Flats, Live-Stack und Bibliothek |
+| `docs/stacking-und-kalibrierung.md` | Serien, Namenskonvention, Ablauf einer Nacht, Live-Stack, Bildanalyse, Bibliothek |
 
 Läuft mit Python 3.9+. Fernsteuerung, Livebild, Bulb und Serien brauchen nur die Standardbibliothek (auch das
-System-Python `/usr/bin/python3`); Live-Stack und Bibliothek brauchen zusätzlich numpy und rawpy (`requirements.txt`).
+System-Python `/usr/bin/python3`); Live-Stack, Bildanalyse und Bibliothek brauchen zusätzlich numpy und rawpy
+(`requirements.txt`).
 
 ## Entwickeln
 
@@ -76,8 +329,9 @@ Live-Stack). ruff prüft auf Python 3.9 (`pyproject.toml`), damit der Code mit b
 legt Symlinks in `~/.local/bin` auf dieses Projekt an – Änderungen wirken sofort:
 
 - **Oberfläche** (`6d-studio.html`): Browser neu laden (Cmd+R).
-- **Server** (`6d-studio.py`): `6d-fernsteuerung stop` und `6d-fernsteuerung studio`.
-  Danach muss an der Kamera die Fernsteuerung neu gestartet werden (die 6D beendet sie beim Trennen).
+- **Server und Module** (`*.py`): `6d-fernsteuerung stop` und `6d-fernsteuerung studio`.
+  Danach muss an der Kamera die Fernsteuerung neu gestartet werden (die 6D beendet sie beim Trennen). Ein
+  laufender Live-Stack geht dabei verloren – die Lights liegen aber auf dem Mac: „Nachstacken“.
 
 In VS Code (Cmd+Shift+P → „Tasks: Run Task“): Studio starten/stoppen, Log verfolgen, Tests, Installieren.
 Debuggen: Startkonfiguration „6D Studio (Debug)“ – stoppt vorher das Hintergrund-Studio.
@@ -96,10 +350,14 @@ ohne Abfragen trennt sie nach 30 s, Download mit 1 MB/s. Das Livebild zeigt eine
 Lupe und Fokusantrieb reagiert – ideal zum Testen der Schärfe-Anzeige. Optionen: `sim/sim6d.py --help`
 (z. B. `--mode M`, `--apo 60` für die Abschaltautomatik, `--reject` für abgelehnte Kopplung).
 
-Für Live-Stack und Bibliothek: `6d-fernsteuerung sim --raw --sky-speed 60 --focus 0` – dann gibt es je Aufnahme
-ein RAW mit echten Sensordaten (Offset, Rauschen, Hotpixel abhängig von Temperatur und ISO, Sterne, die sich
-60× schneller um den Pol drehen). Für Darks und Bias: `6d-fernsteuerung sim-cmd cap on` (Objektivdeckel),
-`sim-cmd temp 20` (Umgebungstemperatur), `sim-cmd mode M`.
+Für Live-Stack und Bibliothek: `6d-fernsteuerung sim --raw --sky-speed 60 --focus 0`. Dann gibt es je Aufnahme
+ein RAW mit echten Sensordaten:
+- Offset und Rauschen,
+- Hotpixel abhängig von Temperatur und ISO,
+- Sterne, die sich 60× schneller um den Pol drehen.
+
+Für Darks und Bias: `6d-fernsteuerung sim-cmd cap on` (Objektivdeckel), `sim-cmd temp 20` (Umgebungstemperatur),
+`sim-cmd mode M`.
 
 In VS Code mit Haltepunkten in beiden: Startkonfiguration **„Simulator + Studio (Debug)“**. Im Terminal des
 Simulators lässt er sich steuern: `mode M`, `drop` (WLAN-Abbruch), `freeze`/`wake`, `focus 0`, `status`.
