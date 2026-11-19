@@ -309,6 +309,61 @@ class TestStudioMitSimulator(unittest.TestCase):
             cam.set_mode("B")
             self.assertTrue(wait_for(lambda: st.is_bulb_mode(), 5))
 
+    @unittest.skipUnless(studio.imaging.missing() is None, "braucht numpy und rawpy (venv)")
+    def test_9c_flats_und_dark_flats_dann_live_stack_mit_flat(self):
+        st, cam = self.st, self.cam
+        cam.args.raw, cam.args.sky_speed, cam.focus = True, 60.0, 0
+        st.act_set({"prop": "aperture", "value": 0x10})              # f/1.4 – Flats und Lights gleich
+        st.act_set({"prop": "iso", "value": 0x58})                   # ISO 400 für die Flats
+        try:
+            # Flats: Moduswahlrad Av, Leuchtfläche vor dem Objektiv
+            cam.set_mode("AV")
+            self.assertTrue(wait_for(lambda: st.props.get(studio.P_AEMODE) == 2, 5))
+            cam.panel = True
+            s = self.run_series(type="flat", target="Flats", count=3, pause=0, master=True)
+            flat = self.wait_master()[0]
+            session = os.path.basename(s["session"])
+            self.assertEqual((flat["kind"], flat["fnumber"], flat["focal"], flat["source"]),
+                             ("flat", 1.4, 24.0, session))
+            self.assertAlmostEqual(st.series["flat_level"], sim.AV_TARGET, delta=0.06)   # Rückmeldung beim Aufnehmen
+            self.assertTrue(any("Flat-Helligkeit" in line for line in self.logs))
+            self.assertEqual(st.last_flat["iso"], 400)
+            # Dark-Flats: Moduswahlrad M, Deckel drauf – ISO und Zeit absichtlich falsch, das Studio stellt sie ein
+            cam.panel, cam.cap = False, True
+            cam.set_mode("M")
+            self.assertTrue(wait_for(lambda: st.props.get(studio.P_AEMODE) == 3, 5))
+            st.act_set({"prop": "iso", "value": 0x70})
+            st.act_set({"prop": "shutter", "value": 0x6D})
+            self.run_series(type="darkflat", target="Flats", count=3, pause=0, master=True)
+            self.assertEqual(st.props[studio.P_ISO], 0x58, "\n".join(self.logs[-25:]))
+            results = self.wait_master()
+            self.assertEqual([r["kind"] for r in results], ["darkflat", "flat"])  # Flat neu – jetzt mit Dark-Flat
+            df, flat2 = results
+            self.assertEqual(df["iso"], 400)
+            self.assertLess(abs(df["exposure"] / st.last_flat["exposure"] - 1), 0.25)
+            self.assertEqual(flat2["flatcal"], df["name"])
+            flats = [e for e in st.library.list() if e["kind"] == "flat" and e["source"] == session]
+            self.assertEqual([e["name"] for e in flats], [flat2["name"]])          # alter Master-Flat ersetzt
+            # Lights mit derselben Optik: der Live-Stack nimmt den Flat von selbst
+            cam.cap = False
+            cam.set_mode("B")
+            self.assertTrue(wait_for(lambda: st.is_bulb_mode(), 5))
+            st.act_set({"prop": "iso", "value": 0x70})
+            st.act_live_start({"target": "Flats"})
+            self.run_series(type="light", target="Flats", count=2, exposure=1, pause=0, download="raw")
+            live = st.live
+            self.assertTrue(wait_for(lambda: live.status()["frames"] + live.status()["rejected"] >= 2
+                                     and not live.status()["busy"], 30))
+            self.assertEqual(live.status()["calib"]["flat"], flat2["name"])
+            st.act_live_stop({})
+            self.assertTrue(wait_for(lambda: live.status()["done"], 20))
+            titles = [i["title"] for i in live.status()["analysis"]["items"]]
+            self.assertTrue(any(t.startswith("Flat gleicht die Vignettierung aus") for t in titles), titles)
+        finally:
+            cam.args.raw, cam.args.sky_speed, cam.cap, cam.panel = False, 1.0, False, False
+            cam.set_mode("B")
+            self.assertTrue(wait_for(lambda: st.is_bulb_mode(), 5))
+
 
 if __name__ == "__main__":
     unittest.main()

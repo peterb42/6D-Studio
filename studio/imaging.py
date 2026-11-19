@@ -82,8 +82,10 @@ def _val(d, bo, entry):
 
 
 def read_meta(path):
-    """ISO, Belichtungszeit, Aufnahmezeit, Kamera und Sensortemperatur aus CR2/DNG/JPEG (EXIF) – ohne numpy."""
-    meta = {"iso": None, "exposure": None, "time": None, "model": None, "temp": None}
+    """ISO, Belichtungszeit, Aufnahmezeit, Kamera, Sensortemperatur und Optik (Blende, Brennweite, Objektiv) aus
+    CR2/DNG/JPEG (EXIF) – ohne numpy. Manuelle Objektive melden keine Blende (dann None)."""
+    meta = {"iso": None, "exposure": None, "time": None, "model": None, "temp": None,
+            "fnumber": None, "focal": None, "lens": None}
     try:
         with open(path, "rb") as f:
             d = f.read(4 << 20)                      # Kopf, EXIF und MakerNote stehen vorn
@@ -109,6 +111,15 @@ def read_meta(path):
             meta["time"] = t[:10].replace(":", "-") + t[10:] if len(t) >= 19 else t
         if 0x9400 in exif:                           # EXIF 2.31 „Temperature“
             meta["temp"] = round(float(_val(d, bo, exif[0x9400])), 1)
+        if 0x829D in exif:                           # FNumber
+            f = float(_val(d, bo, exif[0x829D]))
+            meta["fnumber"] = round(f, 1) if f > 0 else None
+        if 0x920A in exif:                           # FocalLength
+            f = float(_val(d, bo, exif[0x920A]))
+            meta["focal"] = round(f, 1) if f > 0 else None
+        if 0xA434 in exif:                           # LensModel
+            lens = str(_val(d, bo, exif[0xA434])).strip()
+            meta["lens"] = lens or None
         pos = CANON_TEMP_OFFSET.get(meta["model"])
         if pos is not None and 0x927C in exif:
             maker = _ifd(d, bo, exif[0x927C][2])

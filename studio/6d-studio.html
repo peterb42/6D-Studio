@@ -297,6 +297,8 @@ body.night #red{display:block}
       <div class="hint" id="lSub"></div>
       <div class="field"><label for="lBias">Bias</label><select id="lBias"></select></div>
       <div class="field"><label for="lDark">Dark</label><select id="lDark"></select></div>
+      <div class="field" title="Teilt jedes Light durch den Master-Flat – gleicht Vignettierung und Staub aus. Automatisch: gleiche Blende, Brennweite und Objektiv wie die Lights">
+        <label for="lFlat">Flat</label><select id="lFlat"></select></div>
       <label class="toggle" title="Wie Siril: Faktor k ∈ [0, 4] mit der kleinsten Streuung im 512×512-Feld der Bildmitte (ohne die Hotpixel, die danach ohnehin ersetzt werden)">
         <input type="checkbox" id="lOpt" checked> Dark-Optimierung (gleicht Temperatur aus)</label>
       <label class="toggle"><input type="checkbox" id="lHot" checked> Hotpixel-Filter je Bild</label>
@@ -319,7 +321,7 @@ body.night #red{display:block}
     </section>
 
     <section class="card" id="libCard">
-      <h2>Dark- &amp; Bias-Bibliothek</h2>
+      <h2>Kalibrier-Bibliothek</h2>
       <div class="warnbox" id="libMissing" hidden></div>
       <div id="libTable" class="hint">Lade …</div>
       <div class="row">
@@ -330,17 +332,13 @@ body.night #red{display:block}
           <div class="step" id="wz1"><b>Was aufnehmen?</b>
             <div class="row" style="margin-top:4px">
               <button class="btn wk" data-k="bias">Bias</button><button class="btn wk" data-k="dark">Darks</button>
+              <button class="btn wk" data-k="flat">Flats</button><button class="btn wk" data-k="darkflat">Dark-Flats</button>
             </div>
             <div class="hint" id="wzWhat" style="margin-top:6px"></div>
           </div>
           <div class="step" id="wz2"><b>Kamera vorbereiten</b>
             <div id="wzAuto"></div>
-            <label class="check"><input type="checkbox" class="wc"> Objektivdeckel drauf</label>
-            <label class="check"><input type="checkbox" class="wc"> Sucher abgedeckt (Okularabdeckung am Kameragurt) – sonst
-              fällt Licht durch den Sucher auf den Sensor</label>
-            <label class="check"><input type="checkbox" class="wc"> Rauschreduzierung bei Langzeitbelichtung AUS
-              (Menü Aufnahme 4) – sonst macht die Kamera nach jedem Bild selbst ein Dark</label>
-            <label class="check"><input type="checkbox" class="wc"> Bildqualität RAW oder RAW+JPEG</label>
+            <div id="wzManual"></div>
           </div>
           <div class="step" id="wz3"><b>Aufnehmen</b>
             <div class="field" id="wzExpRow"><label>Belichtung</label>
@@ -685,10 +683,14 @@ async function loadStack() {
   stackBusy = false;
 }
 
+const fmtOptics = m => [m.focal ? `${+m.focal} mm` : '', m.fnumber ? `f/${+m.fnumber}` : ''].filter(Boolean).join(' · ') || 'Optik ?';
 function masterOptions(kind) {
   const list = LIB ? LIB.masters.filter(m => m.kind === kind) : [];
-  return [['auto', 'Automatisch (passend zu den Lights)'], ['none', kind === 'bias' ? 'Keins – Schwarzwert der Kamera' : 'Keins']]
-    .concat(list.map(m => [m.id, `ISO ${m.iso}${kind === 'dark' ? ' · ' + fmtExp(m.exposure) : ''} · ${fmtTemp(m.temp)} · ${m.n}× · ${(m.date || '').slice(0, 10)}`]));
+  const auto = kind === 'flat' ? 'Automatisch (passend zur Optik)' : 'Automatisch (passend zu den Lights)';
+  return [['auto', auto], ['none', kind === 'bias' ? 'Keins – Schwarzwert der Kamera' : 'Keins']]
+    .concat(list.map(m => [m.id, kind === 'flat'
+      ? `${fmtOptics(m)} · ${m.n}× · ${(m.date || '').slice(0, 10)}`
+      : `ISO ${m.iso}${kind === 'dark' ? ' · ' + fmtExp(m.exposure) : ''} · ${fmtTemp(m.temp)} · ${m.n}× · ${(m.date || '').slice(0, 10)}`]));
 }
 function fillOptions(el, opts, keep) {
   const key = JSON.stringify(opts);
@@ -706,7 +708,8 @@ function renderLive() {
   $('#lMissing').textContent = miss ? `Live-Stack und Masters brauchen numpy und rawpy: ${miss}` : '';
   fillOptions($('#lBias'), masterOptions('bias'), store.get('l.bias', 'auto'));
   fillOptions($('#lDark'), masterOptions('dark'), store.get('l.dark', 'auto'));
-  ['lBias', 'lDark', 'lOpt', 'lHot', 'lSat'].forEach(id => $('#' + id).disabled = running || !!miss);
+  fillOptions($('#lFlat'), masterOptions('flat'), store.get('l.flat', 'auto'));
+  ['lBias', 'lDark', 'lFlat', 'lOpt', 'lHot', 'lSat'].forEach(id => $('#' + id).disabled = running || !!miss);
   $('#lStart').hidden = running;
   $('#lStart').disabled = !!miss;
   $('#lStop').hidden = $('#lReset').hidden = !running;
@@ -738,6 +741,7 @@ function renderLive() {
     : !c.hasOwnProperty('dark') ? 'Kalibrierung wird beim ersten RAW gewählt.'
     : `Bias: ${c.bias || 'Schwarzwert ' + c.offset} · Dark: ${c.dark ? `${c.dark}` : 'keins'}`
       + (c.dark ? ` · ${c.hot} Hotpixel` : '') + (last && last.k !== undefined ? ` · k = ${last.k}` : '')
+      + ` · Flat: ${c.flat || `keiner für ${c.optics || 'diese Optik'}`}`
       + (L.temp !== null && L.temp !== undefined ? ` · Lights ${fmtTemp(L.temp)}` : '');
   $('#lHist').innerHTML = L.history.length ? `<table class="mini"><tr><th></th><th>Bild</th><th>Sterne</th><th>k</th><th>FWHM</th><th>Drehung</th><th title="Restfehler der Ausrichtung">±px</th></tr>`
     + L.history.slice(0, 8).map(h => h.ok
@@ -774,12 +778,14 @@ $('#stFlat').onchange = e => api('/api/live/view', {flatten: e.target.checked});
 $$('.view').forEach(b => b.onclick = () => setView(b.dataset.v));
 $('#lBias').onchange = e => store.set('l.bias', e.target.value);
 $('#lDark').onchange = e => store.set('l.dark', e.target.value);
+$('#lFlat').onchange = e => store.set('l.flat', e.target.value);
 for (const id of ['lOpt', 'lHot', 'lSat']) {
   $('#' + id).checked = store.get('l.' + id, true);
   $('#' + id).onchange = e => store.set('l.' + id, e.target.checked);
 }
 function liveBody() {
-  return {bias: $('#lBias').value || 'auto', dark: $('#lDark').value || 'auto', optimize: $('#lOpt').checked,
+  return {bias: $('#lBias').value || 'auto', dark: $('#lDark').value || 'auto', flat: $('#lFlat').value || 'auto',
+          optimize: $('#lOpt').checked,
           hotpixels: $('#lHot').checked, satellites: $('#lSat').checked, target: $('#sTarget').value.trim()};
 }
 $('#lStart').onclick = async () => { if (await api('/api/live/start', liveBody())) stackSeq = -1; };
@@ -798,18 +804,19 @@ function sendView() {
 $('#stStretch').oninput = $('#stBlack').oninput = sendView;
 $('#stDefault').onclick = () => { $('#stStretch').value = 0.25; $('#stBlack').value = -2.8; sendView(); };
 
-// ---------------------------------------------------------------- Dark- & Bias-Bibliothek
+// ---------------------------------------------------------------- Kalibrier-Bibliothek
 async function loadLibrary() {
   try {
     LIB = await (await fetch('/api/library', {cache: 'no-store'})).json();
   } catch (e) { return; }
   const src = $('#libSrc');
   const builds = [];
+  const names = {dark: 'Darks', bias: 'Bias', flat: 'Flats', darkflat: 'Dark-Flats'};
   for (const s of LIB.sources) {
-    if (s.dark >= 3) builds.push([`${s.session}|dark`, `${s.session} · ${s.dark} Darks`]);
-    if (s.bias >= 3) builds.push([`${s.session}|bias`, `${s.session} · ${s.bias} Bias`]);
+    for (const k of ['dark', 'bias', 'flat', 'darkflat'])
+      if (s[k] >= 3) builds.push([`${s.session}|${k}`, `${s.session} · ${s[k]} ${names[k]}`]);
   }
-  fillOptions(src, builds.length ? builds : [['', '– keine Ordner mit mind. 3 RAW-Darks/-Bias –']]);
+  fillOptions(src, builds.length ? builds : [['', '– keine Ordner mit mind. 3 RAW-Kalibrierbildern –']]);
   const lights = LIB.sources.filter(s => s.light || s.light_jpeg)
     .map(s => [s.session, `${s.session} · ${s.light ? s.light + ' RAW' : s.light_jpeg + ' JPEG'}`]);
   fillOptions($('#lSession'), lights.length ? lights : [['', '– keine Sitzung mit Lights –']]);
@@ -817,9 +824,32 @@ async function loadLibrary() {
 }
 setInterval(loadLibrary, 20000);
 
-function lightMatch(m, ll) {
+const near = (a, b, tol) => !a || !b || Math.abs(a / b - 1) <= tol;   // unbekannt zählt als passend
+function lightMatch(m, ll, lf) {
+  if (m.kind === 'flat')                                 // gleiche Optik wie die letzten Lights
+    return !!ll && !!(ll.fnumber || ll.focal) && near(m.fnumber, ll.fnumber, 0.06) && near(m.focal, ll.focal, 0.03)
+      && (!m.lens || !ll.lens || m.lens === ll.lens);
+  if (m.kind === 'darkflat')                             // ISO und Zeit der letzten Flats
+    return !!lf && m.iso === lf.iso && !!(lf.exposure && m.exposure) && Math.abs(m.exposure / lf.exposure - 1) <= 0.25;
   if (!ll || m.iso !== ll.iso) return false;
   return m.kind === 'bias' || !!(ll.exposure && m.exposure && Math.abs(m.exposure / ll.exposure - 1) <= 0.05);
+}
+function masterDetail(m) {                               // Spalte „Zeit / Optik“
+  if (m.kind === 'flat') return fmtOptics(m);
+  if (m.kind === 'dark' || m.kind === 'darkflat') return fmtExp(m.exposure);
+  return '–';
+}
+function masterTitle(m) {
+  const t = [m.name];
+  if (m.noise !== null && m.noise !== undefined && m.kind !== 'flat') t.push(`Rauschen ${m.noise} ADU`);
+  if (m.hot !== null && m.hot !== undefined) t.push(`${m.hot} Hotpixel`);
+  if (m.kind === 'flat') {
+    if (m.level !== null && m.level !== undefined) t.push(`Helligkeit ${Math.round(m.level * 100)} %`);
+    if (m.vignette !== null && m.vignette !== undefined) t.push(`Ecken ${Math.round(m.vignette * 100)} % dunkler`);
+    if (m.flatcal) t.push(`abgezogen: ${m.flatcal}`);
+    if (m.lens) t.push(m.lens);
+  }
+  return t.join(' · ');
 }
 function renderLibrary() {
   const miss = S.imaging;
@@ -827,24 +857,26 @@ function renderLibrary() {
   $('#libMissing').textContent = miss ? `Masters erstellen braucht numpy und rawpy: ${miss}` : '';
   $('#libBuild').disabled = !!miss || !$('#libSrc').value || !!(S.master_job && S.master_job.active);
   if (LIB) {
-    const ll = S.last_light;
-    const key = JSON.stringify([LIB.masters, ll && [ll.iso, ll.exposure]]);
+    const ll = S.last_light, lf = S.last_flat;
+    const key = JSON.stringify([LIB.masters, ll && [ll.iso, ll.exposure, ll.fnumber, ll.focal], lf && [lf.iso, lf.exposure]]);
     if ($('#libTable').dataset.key !== key) {
       $('#libTable').dataset.key = key;
       $('#libTable').className = LIB.masters.length ? '' : 'hint';
       $('#libTable').innerHTML = !LIB.masters.length
         ? 'Noch keine Masters. „Geführt aufnehmen“ oder aus einem Sitzungsordner erstellen.'
-        : `<table class="mini"><tr><th>Typ</th><th>ISO</th><th>Zeit</th><th>Temp.</th><th>Bilder</th><th>Datum</th><th></th></tr>`
-          + LIB.masters.map(m => `<tr class="${lightMatch(m, ll) ? 'match' : ''}" title="${esc(m.name)}${m.noise !== null ? ` · Rauschen ${m.noise} ADU` : ''}${m.hot !== null && m.hot !== undefined ? ` · ${m.hot} Hotpixel` : ''}">
-              <td>${m.label}${lightMatch(m, ll) ? ' <span class="ok">✓</span>' : ''}</td><td>${m.iso}</td>
-              <td>${m.kind === 'dark' ? fmtExp(m.exposure) : '–'}</td>
+        : `<table class="mini"><tr><th>Typ</th><th>ISO</th><th>Zeit / Optik</th><th>Temp.</th><th>Bilder</th><th>Datum</th><th></th></tr>`
+          + LIB.masters.map(m => `<tr class="${lightMatch(m, ll, lf) ? 'match' : ''}" title="${esc(masterTitle(m))}">
+              <td>${m.label}${lightMatch(m, ll, lf) ? ' <span class="ok">✓</span>' : ''}</td><td>${m.iso}</td>
+              <td>${esc(masterDetail(m))}</td>
               <td>${fmtTemp(m.temp)}${m.tmin !== null && m.tmax !== null && m.tmax - m.tmin >= 1 ? `<span class="hint"> (${Math.round(m.tmin)}–${Math.round(m.tmax)})</span>` : ''}</td>
               <td>${m.n}</td><td>${esc((m.date || '').slice(0, 10))}</td>
               <td><button class="x" data-del="${esc(m.id)}" title="Löschen">✕</button></td></tr>`).join('')
           + '</table>';
     }
     $('#libNote').textContent = `Ordner: ${LIB.folder} · FITS, direkt in Siril nutzbar.`
-      + (ll ? ` ✓ = passt zu den letzten Lights (ISO ${ll.iso}, ${fmtExp(ll.exposure)}${ll.temp !== null ? ', ' + fmtTemp(ll.temp) : ''}).` : '');
+      + (ll ? ` ✓ = passt zu den letzten Lights (ISO ${ll.iso}, ${fmtExp(ll.exposure)}${ll.temp !== null && ll.temp !== undefined ? ', ' + fmtTemp(ll.temp) : ''}`
+        + `${ll.fnumber || ll.focal ? ', ' + fmtOptics(ll) : ''})` : '')
+      + (lf ? `, Dark-Flats zu den letzten Flats (ISO ${lf.iso}, ${fmtExp(lf.exposure)})` : '') + (ll || lf ? '.' : '');
   }
   renderJob();
   renderWizard();
@@ -870,17 +902,71 @@ $('#libBuild').onclick = () => {
   api('/api/library/build', {session, kind});
 };
 
-// ---------- Geführte Aufnahme von Bias und Darks
+// ---------- Geführte Aufnahme von Bias, Darks, Flats und Dark-Flats
 const WIZ_TEXT = {
   bias: 'Bias = Ausleserauschen und Offset des Sensors, kürzeste Zeit (1/4000). Je ISO einmal 40–50 Stück – gern ' +
         'zu Hause, sie ändern sich kaum. Werden von Lights, Darks und Flats abgezogen.',
   dark: 'Darks = Wärmerauschen und Hotpixel. Gleiche ISO und Zeit wie die Lights, 15–30 Stück – am besten direkt ' +
         'nach den Lights, solange die Kamera gleich warm ist. Die Dark-Optimierung gleicht kleine Temperatur­unterschiede aus.',
+  flat: 'Flats = Lichtabfall zu den Rändern (Vignettierung) und Staubschatten. Gleichmäßig helle Fläche vor dem ' +
+        'Objektiv, Fokus und Blende genau wie bei den Lights. Modus Av, ISO 100–400, 20–30 Stück – direkt nach den Lights, ' +
+        'bevor jemand am Objektiv dreht. Der Live-Stack teilt jedes Light durch den Master-Flat.',
+  darkflat: 'Dark-Flats = Offset und Rauschen der Flats: gleiche ISO und Zeit wie die Flats, Deckel drauf. Das Studio ' +
+        'stellt beides selbst ein. Bei Flats unter 1 s reicht meist der Master-Bias – dann sind Dark-Flats optional.',
 };
+const WIZ_MANUAL = {
+  bias: ['Objektivdeckel drauf', 'Sucher abgedeckt (Okularabdeckung am Kameragurt) – sonst fällt Licht durch den Sucher auf den Sensor',
+         'Bildqualität RAW oder RAW+JPEG'],
+  dark: ['Objektivdeckel drauf', 'Sucher abgedeckt (Okularabdeckung am Kameragurt) – sonst fällt Licht durch den Sucher auf den Sensor',
+         'Rauschreduzierung bei Langzeitbelichtung AUS (Menü Aufnahme 4) – sonst macht die Kamera nach jedem Bild selbst ein Dark',
+         'Bildqualität RAW oder RAW+JPEG'],
+  flat: ['Gleichmäßig helle Fläche direkt vor dem Objektiv: weißes T-Shirt straff davor und ein Tablet mit weißem Bild, oder der Dämmerungshimmel',
+         'Fokus, Blende, Brennweite und Drehung der Kamera seit den Lights unverändert – auch Taukappe und Filter',
+         'Belichtungskorrektur +1 EV (Av belichtet sonst zu dunkel) – das Studio misst das erste Flat',
+         'Bildqualität RAW oder RAW+JPEG'],
+  darkflat: ['Objektivdeckel drauf', 'Sucher abgedeckt (Okularabdeckung am Kameragurt)', 'Bildqualität RAW oder RAW+JPEG'],
+};
+const WIZ_COUNT = {bias: 40, dark: 20, flat: 25, darkflat: 25};
 let wiz = {open: false, kind: store.get('wiz.kind', 'dark'), sid: null};
 const DARK_MIN_EXPOSURE = 0.8;             // wie calib.DARK_MIN_EXPOSURE: kürzere Darks sind nur Bias
+const FLAT_LEVEL = [0.2, 0.8];             // wie calib.FLAT_LEVEL
+const pct = x => `${Math.round(x * 100)} %`;
+function flatLevelCheck(level) {
+  if (level === null || level === undefined) return null;
+  if (level < FLAT_LEVEL[0]) return [null, `Flats ${pct(level)} hell – zu dunkel: Belichtungskorrektur +1…+2 EV, dann neu starten`];
+  if (level > FLAT_LEVEL[1]) return [null, `Flats ${pct(level)} hell – zu hell: −1 EV oder Lichtquelle dunkler, dann neu starten`];
+  return [true, `Flats ${pct(level)} hell – gut (ideal 30–60 %)`];
+}
+function flatChecks(ll, s) {
+  const out = [], mode = S.mode;
+  out.push(mode === 'Av' ? [true, 'Moduswahlrad Av – die Kamera wählt die Zeit']
+    : mode === 'M' ? [true, 'Moduswahlrad M – Zeit so wählen, dass die Flats 30–60 % hell werden']
+    : [false, 'Moduswahlrad auf Av stellen']);
+  const cam = parseFloat((S.aperture.label || '').replace('f/', ''));
+  if (!cam) out.push([null, 'Keine Blende gemeldet (manuelles Objektiv?) – Blende am Ring wie bei den Lights lassen']);
+  else if (ll && ll.fnumber) out.push(Math.abs(cam / ll.fnumber - 1) < 0.06 ? [true, `Blende f/${cam} wie die Lights`]
+    : [null, `Blende f/${cam} – die Lights hatten f/${+ll.fnumber}: zurückstellen, sonst passt der Flat nicht zu ihnen`]);
+  else out.push([null, `Blende f/${cam} – genau wie bei den Lights lassen`]);
+  const iso = parseInt(S.iso.label, 10);
+  out.push(iso && iso <= 800 ? [true, `ISO ${iso} – gut für Flats`] : [null, `ISO ${S.iso.label} – für Flats besser 100–400 (weniger Rauschen)`]);
+  const lvl = flatLevelCheck(s && s.flat_level);
+  if (lvl) out.push(lvl);
+  return out;
+}
+function darkflatChecks() {
+  const lf = S.last_flat, mode = S.mode;
+  const out = [mode === 'M' ? [true, 'Moduswahlrad M'] : [false, 'Moduswahlrad auf M stellen']];
+  if (lf && lf.exposure) {
+    out.push([true, `ISO und Zeit: das Studio stellt ISO ${lf.iso} und ${fmtExp(lf.exposure)} der letzten Flats ein`]);
+    if (lf.exposure < 1) out.push([true, `Flats mit ${fmtExp(lf.exposure)}: der Master-Bias reicht meist – Dark-Flats sind optional`]);
+  } else out.push([null, 'Keine Flats seit dem Start des Studios – ISO und Zeit der Flats von Hand einstellen']);
+  return out;
+}
 function wizChecks() {
   const ll = S.last_light, k = wiz.kind, out = [];
+  const s = S.series, mine = s && wiz.sid && s.started === wiz.sid;
+  if (k === 'flat') return flatChecks(ll, mine ? s : null);
+  if (k === 'darkflat') return darkflatChecks();
   const mode = S.mode, modeOk = k === 'bias' ? mode === 'M' : (mode === 'B' || mode === 'M');
   out.push([modeOk, modeOk ? `Moduswahlrad ${mode}` : `Moduswahlrad auf ${k === 'bias' ? 'M' : 'B (oder M)'} stellen`]);
   const iso = S.iso.label;
@@ -917,6 +1003,10 @@ function renderWizard() {
   const k = wiz.kind;
   $$('.wk').forEach(b => b.classList.toggle('on', b.dataset.k === k));
   $('#wzWhat').textContent = WIZ_TEXT[k];
+  if ($('#wzManual').dataset.kind !== k) {                 // Punkte zum Abhaken je Bildtyp
+    $('#wzManual').dataset.kind = k;
+    $('#wzManual').innerHTML = WIZ_MANUAL[k].map(t => `<label class="check"><input type="checkbox" class="wc"> ${esc(t)}</label>`).join('');
+  }
   const checks = wizChecks();
   $('#wzAuto').innerHTML = checks.map(([ok, t]) =>
     `<div class="auto"><span class="${ok ? 'ok' : ok === null ? 'warn' : 'bad'}">${ok ? '✓' : ok === null ? '!' : '✗'}</span> ${esc(t)}</div>`).join('');
@@ -929,7 +1019,9 @@ function renderWizard() {
   $('#wz3').className = 'step ' + (mine && !running ? 'done' : manual && autoOk ? 'now' : '');
   $('#wz4').className = 'step ' + (jobMine && !job.active && !job.error ? 'done' : jobMine ? 'now' : '');
   $('#wzExpRow').hidden = !(k === 'dark' && S.bulb_mode);
-  const n = +$('#wzCount').value || 0, exp = k === 'bias' ? 0 : S.bulb_mode ? wizExposure() : parseShutter(S.shutter.label);
+  const lf = S.last_flat, n = +$('#wzCount').value || 0;
+  const exp = k === 'bias' ? 0 : k === 'flat' ? 0.1 : k === 'darkflat' ? (lf && lf.exposure) || 0.1
+    : S.bulb_mode ? wizExposure() : parseShutter(S.shutter.label);
   $('#wzTime').textContent = n ? `Aufnahme ≈ ${fmt(n * (exp + 3))} · Download der RAWs ≈ ${fmt(n * 25)} (~25 MB je Bild über den Hotspot, läuft nebenher)` : '';
   $$('.wc, .wk, #wzCount, #wzMin, #wzSec').forEach(el => el.disabled = !!running);
   $('#wzStart').disabled = !S.connected || !manual || !autoOk || !!(s && s.active) || S.bulb.active || !!S.imaging
@@ -937,15 +1029,17 @@ function renderWizard() {
   $('#wzStart').textContent = running ? `${s.label} ${s.index}/${s.count} · ${s.phase}` : 'Aufnahme starten';
   $('#wzResult').textContent = !mine ? 'Startet von selbst, sobald alle RAWs auf dem Mac sind, und landet in der Bibliothek.'
     : running ? `Läuft · ${s.loaded} von ${s.count} RAWs geladen – der Master wird danach gebaut.`
+      + (k === 'flat' && s.flat_level !== undefined ? ` Flats ${pct(s.flat_level)} hell.` : '')
     : !jobMine ? (s.error ? `Serie abgebrochen: ${s.error}` : 'Warte auf die Downloads …')
     : job.error ? `Fehler: ${job.error}`
     : job.active ? `${job.phase}${job.total ? ` · ${job.done}/${job.total}` : ''}`
     : `Fertig: ${job.results.map(r => r && r.name).filter(Boolean).join(', ')} – steht in der Bibliothek und wird beim Live-Stack automatisch gewählt.`;
 }
 function wizSetKind(k) {
-  wiz.kind = k;
+  wiz.kind = WIZ_TEXT[k] ? k : 'dark';
+  k = wiz.kind;
   store.set('wiz.kind', k);
-  $('#wzCount').value = k === 'bias' ? 40 : 20;
+  $('#wzCount').value = WIZ_COUNT[k];
   if (k === 'dark' && S && S.last_light && S.last_light.exposure) {
     const e = Math.round(S.last_light.exposure);
     $('#wzMin').value = Math.floor(e / 60); $('#wzSec').value = e % 60;
@@ -953,7 +1047,7 @@ function wizSetKind(k) {
   if (S) renderWizard();
 }
 $$('.wk').forEach(b => b.onclick = () => wizSetKind(b.dataset.k));
-$$('.wc').forEach(c => c.onchange = () => S && renderWizard());
+$('#wzManual').addEventListener('change', () => S && renderWizard());
 ['#wzCount', '#wzMin', '#wzSec'].forEach(id => $(id).addEventListener('input', () => S && renderWizard()));
 $('#wizOpen').onclick = () => { wiz.open = true; wizSetKind(wiz.kind); };
 $('#wzClose').onclick = () => { wiz.open = false; renderWizard(); };
@@ -961,7 +1055,7 @@ $('#wzStart').onclick = async () => {
   const k = wiz.kind, before = S.series ? S.series.started : null;
   const ok = await api('/api/series/start', {
     type: k, target: $('#sTarget').value.trim() || 'Kalibrierung', count: +$('#wzCount').value || 20,
-    exposure: wizExposure(), pause: k === 'bias' ? 0.5 : 1, master: true, download: 'raw'});
+    exposure: wizExposure(), pause: k === 'bias' || k === 'darkflat' ? 0.5 : 1, master: true, download: 'raw'});
   if (ok && S.series && S.series.started !== before) wiz.sid = S.series.started;
 };
 

@@ -7,6 +7,7 @@ zu √N, Sternbreite und -form in Mitte und Ecken.
 """
 import time
 
+import calib
 import livestack
 from imaging import np
 
@@ -15,6 +16,7 @@ DARK_MIN_N = 15
 TEMP_DELTA = 5.0            # °C zwischen Darks und Lights, ab dem es zählt
 VIGNETTE = (0.10, 0.25)     # Ecken dunkler als die Mitte: Hinweis / Warnung
 GRADIENT = 0.10             # Hintergrund von Rand zu Rand
+FLAT_RESIDUAL = 0.05        # mit Flat: Ecken noch so viel dunkler/heller → Flat passt nicht
 BRIGHT_SECTOR = 0.15        # Bereich heller als das Hintergrundmodell
 GAIN = (0.75, 0.5)          # Rauschgewinn gegenüber √N: Hinweis / Warnung
 FWHM_RATIO = 1.4            # Sterne in den Ecken breiter als in der Mitte
@@ -190,13 +192,16 @@ def check_background(snap):
     if c0 <= 0:
         return []
     vignette = -(c[3] + c[4]) / c0                    # radial, in den Ecken (r = 1)
-    if vignette >= VIGNETTE[0]:
+    if snap["kind"] == "raw" and snap["calib"].get("flat"):
+        out += check_flat(snap["calib"], vignette)
+    elif vignette >= VIGNETTE[0]:
         out.append(finding("warn" if vignette >= VIGNETTE[1] else "info", "Hintergrund",
                            "Ecken %s dunkler als die Mitte (Vignettierung)" % pct(vignette),
-                           "Dunkle Ecken schneidet die Anzeige sonst schwarz ab; „Hintergrund ebnen“ gleicht sie "
-                           "für die Anzeige aus.",
-                           "Flats korrigieren das im Ergebnis: Serie „Flats“ und „Dark-Flats“ mit unverändertem "
-                           "Fokus und unveränderter Blende. Abblenden verringert die Vignettierung."))
+                           "Kein Master-Flat für %s. Dunkle Ecken schneidet die Anzeige sonst schwarz ab; "
+                           "„Hintergrund ebnen“ gleicht sie nur für die Anzeige aus."
+                           % (snap["calib"].get("optics") or "diese Optik"),
+                           "Flats korrigieren das im Ergebnis: Bibliothek → „Geführt aufnehmen …“ → Flats, mit "
+                           "unverändertem Fokus und unveränderter Blende. Abblenden verringert die Vignettierung."))
     gx, gy = 2 * c[1] * X / c0, 2 * c[2] * Y / c0     # von Rand zu Rand
     if max(abs(gx), abs(gy)) >= GRADIENT:
         if abs(gy) >= abs(gx):
@@ -210,6 +215,37 @@ def check_background(snap):
     if not out:
         out.append(finding("ok", "Hintergrund", "Hintergrund gleichmäßig",
                            "Vignettierung %s, Gradient unter %s." % (pct(max(vignette, 0)), pct(GRADIENT))))
+    return out
+
+
+def check_flat(c, residual):
+    """Mit Master-Flat: Was an Vignettierung übrig bleibt, zeigt, ob der Flat passt."""
+    out = []
+    what = "Master-Flat %s · %s Bilder" % (c.get("flat_optics") or "", c.get("flat_n") or "?")
+    if c.get("flat_vignette") is not None:
+        what += " · Ecken ohne Flat %s dunkler" % pct(c["flat_vignette"])
+    if residual >= FLAT_RESIDUAL:
+        out.append(finding("warn", "Flat", "Flat gleicht die Vignettierung nicht ganz aus (Ecken noch %s dunkler)"
+                           % pct(residual), what + ".",
+                           "Flats mit derselben Blende, Brennweite und demselben Fokus wie die Lights aufnehmen und "
+                           "dazwischen nichts am Objektiv verändern (Taukappe, Filter, Drehung)."))
+    elif residual <= -FLAT_RESIDUAL:
+        cal = c.get("flat_cal") or ""
+        out.append(finding("warn", "Flat", "Flat korrigiert zu stark (Ecken %s heller)" % pct(-residual),
+                           what + (". Beim Master-Flat wurde nur der Schwarzwert abgezogen." if cal.startswith(
+                               "Schwarzwert") else "."),
+                           "Meist fehlt beim Master-Flat oder bei den Lights der Abzug des Offsets: Bias (oder "
+                           "Dark-Flats) aufnehmen und den Master-Flat neu erstellen (Bibliothek → „Aus Ordner“)."))
+    else:
+        out.append(finding("ok", "Flat", "Flat gleicht die Vignettierung aus (Rest %s)" % pct(abs(residual)), what))
+    level = c.get("flat_level")
+    if level is not None and not calib.FLAT_LEVEL[0] <= level <= calib.FLAT_LEVEL[1]:
+        dark = level < calib.FLAT_LEVEL[0]
+        out.append(finding("info", "Flat", "Flats %s belichtet (%s)" % ("zu dunkel" if dark else "sehr hell",
+                                                                       pct(level)),
+                           "Ideal sind 30–60 % bis zur Sättigung – dann ist das Flat rauscharm und sicher linear.",
+                           "Im Modus Av die Belichtungskorrektur auf +1 bis +2 EV stellen." if dark else
+                           "Belichtungskorrektur −1 EV oder die Lichtquelle dunkler."))
     return out
 
 
@@ -290,10 +326,21 @@ def check_frames(snap, stats):
     out = []
     rejected = snap["rejected"]
     if rejected:
-        reasons = sorted({r for _, r in rejected})
-        out.append(finding("info", "Bilder", "%d Bild%s verworfen" % (len(rejected), "" if len(rejected) == 1
-                                                                       else "er"),
-                           "; ".join(reasons[:3]), "Wolken oder Bewegung? Verworfene Bilder fehlen nur im Stapel."))
+        reasons = sorted({r[1] for r in rejected})
+        # Viele Sterne gefunden, aber keine Zuordnung: Das ist kein Wolkenproblem – der Bildausschnitt ist ein anderer
+        moved = [r for r in rejected if r[1].startswith("Ausrichtung") and len(r) > 2 and r[2] >= 30]
+        if len(moved) >= 3:
+            out.append(finding("warn", "Bilder", "%d Bilder passen nicht zum Stapel – anderer Bildausschnitt?"
+                               % len(moved),
+                               "Sie zeigen genug Sterne (%d und mehr), aber nicht den Himmel des ersten Bilds – die "
+                               "Kamera wurde vermutlich neu ausgerichtet. Ab %s." % (
+                                   min(r[2] for r in moved), moved[0][0].rsplit("_", 1)[-1].split(".")[0]),
+                               "Für den neuen Ausschnitt im Live-Stack „Neu beginnen“ – das nächste Bild wird die "
+                               "Referenz. Den bisherigen Stapel vorher speichern."))
+        rest = len(rejected) - (len(moved) if len(moved) >= 3 else 0)
+        if rest:
+            out.append(finding("info", "Bilder", "%d Bild%s verworfen" % (rest, "" if rest == 1 else "er"),
+                               "; ".join(reasons[:3]), "Wolken oder Bewegung? Verworfene Bilder fehlen nur im Stapel."))
     bgs = [s["bg"] for s in stats if s.get("bg") is not None]
     stars = [s["stars"] for s in stats if s.get("stars")]
     if len(bgs) >= 5:

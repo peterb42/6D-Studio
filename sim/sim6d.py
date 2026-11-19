@@ -46,7 +46,8 @@ BUSY, INVALID_VALUE, SESSION_OPEN, NOT_READY = 0x2019, 0x201C, 0x201E, 0xA102
 P_APERTURE, P_SHUTTER, P_ISO, P_AEMODE = 0xD101, 0xD102, 0xD103, 0xD105
 P_DEST, P_EVF_OUT, P_EVF_MODE = 0xD11C, 0xD1B0, 0xD1B1
 E_PROP, E_AVAIL, E_OBJECT_ADDED, E_STORAGE_INFO, E_WILL_SHUTDOWN = 0xC189, 0xC18A, 0xC181, 0xC185, 0xC18D
-MODE_M, MODE_B = 3, 4
+MODE_AV, MODE_M, MODE_B = 2, 3, 4
+MODES = {"AV": MODE_AV, "M": MODE_M, "B": MODE_B}
 SHUTTER_BULB = 0x0C
 
 # Befehle laut GetDeviceInfo der echten 6D (Auszug) – ohne BulbStart/BulbEnd, wie bei der 6D
@@ -61,6 +62,12 @@ RAW_W, RAW_H = 1368, 912                     # simulierter RAW-Sensor (¼ der 6D
 RAW_BLACK, RAW_WHITE = 2047, 15490           # wie die echte 6D
 SIDEREAL = 2 * math.pi / 86164.1             # Erddrehung in rad/s
 POLE = (SENSOR_W * 0.55, -SENSOR_H * 1.3)    # Himmelspol oberhalb des Bildfelds (Sensorpixel)
+VIGNETTE = 0.3                               # Lichtabfall in den Ecken (offenes Objektiv)
+DUST = (0.62, 0.36, 22.0, 0.12)              # Staubschatten: Mitte (Anteil Breite/Höhe), Radius (RAW-Pixel), Tiefe
+PANEL_RATE = 6.0e5                           # Leuchtfläche für Flats: ADU/s im Grün bei ISO 1600, f/2.8
+PANEL_COLOR = (0.7, 1.0, 0.55)               # Farbe der Leuchtfläche (R, G, B) – nicht neutral, wie ein T-Shirt
+AV_TARGET = 0.4                              # Av belichtet die Leuchtfläche auf 40 % (wie mit +1⅓ EV Korrektur)
+LENS, FOCAL = "Simulator 24mm", 24.0
 
 
 def third_steps(first, last):
@@ -158,9 +165,28 @@ def sky_stars(stars, seconds):
 
 
 # ---------------------------------------------------------------- RAW (Sensordaten)
+def vignette_map():
+    """Lichtabfall je RAW-Pixel wie bei einem offenen Objektiv (Ecken −30 %) plus der ringförmige Schatten eines
+    Staubkorns auf dem Sensor – genau das, was Flats ausgleichen."""
+    cx, cy, half = RAW_W / 2, RAW_H / 2, math.hypot(RAW_W, RAW_H) / 2
+    xs = [((x - cx) / half) ** 2 for x in range(RAW_W)]
+    rows = []
+    for y in range(RAW_H):
+        ry = ((y - cy) / half) ** 2
+        rows.append(array.array("f", [1 - VIGNETTE * (0.4 * r + 0.6 * r * r) for r in (rx + ry for rx in xs)]))
+    dx, dy, rad, depth = DUST[0] * RAW_W, DUST[1] * RAW_H, DUST[2], DUST[3]
+    for y in range(int(dy - 2 * rad), int(dy + 2 * rad) + 1):
+        for x in range(int(dx - 2 * rad), int(dx + 2 * rad) + 1):
+            d = math.hypot(x - dx, y - dy)
+            ring = math.exp(-((d - 0.6 * rad) / (0.3 * rad)) ** 2)
+            rows[y][x] *= 1 - depth * max(ring, 0.5 if d < 0.6 * rad else 0.0)
+    return rows
+
+
 class Sensor:
     """Simulierter Bildsensor: Offset mit festem Spaltenmuster, Ausleserauschen und Wärmesignal mit Hotpixeln.
-    Wärmesignal in ADU/s bei 20 °C und ISO 1600; verdoppelt sich alle 6 °C, wächst mit der ISO."""
+    Wärmesignal in ADU/s bei 20 °C und ISO 1600; verdoppelt sich alle 6 °C, wächst mit der ISO. Licht (Himmel,
+    Sterne, Leuchtfläche) fällt durch ein Objektiv mit Vignettierung und Staubschatten."""
 
     def __init__(self, seed=11):
         rnd = random.Random(seed)
@@ -170,24 +196,30 @@ class Sensor:
         self.hot += [(rnd.randrange(n), rnd.uniform(40, 250)) for _ in range(80)]
         self.noise = [rnd.gauss(0, 1) for _ in range(1 << 18)]
         self.rnd = random.Random()
+        self.vig = vignette_map()
 
-    def frame(self, seconds, iso, temp, sky=None, stars=(), sigma=1.5, gain=1.0):
-        """→ array('H') mit RAW_W × RAW_H Werten (RGGB). sky: ADU/s je Farbe (R, G, B) oder None (Deckel)."""
+    def frame(self, seconds, iso, temp, sky=None, stars=(), sigma=1.5, gain=1.0, panel=None):
+        """→ array('H') mit RAW_W × RAW_H Werten (RGGB). sky: ADU/s je Farbe (R, G, B) oder None (Deckel);
+        panel: Helligkeit einer gleichmäßigen Leuchtfläche je Farbe in ADU (Flats) oder None."""
         g = iso / 1600
         read = 2.5 + 3.5 * g
         heat = seconds * g * 2 ** ((temp - 20) / 6)
+        dc = 0.03 * heat                                                # Dunkelstrom aller Pixel
+        top = RAW_WHITE - RAW_BLACK - 200
         out = array.array("H")
         sky = sky or (0, 0, 0)
         for y in range(RAW_H):
             grad = 1 + 0.5 * y / RAW_H                                  # Lichtverschmutzung unten
-            pair = (sky[0], sky[1]) if y % 2 == 0 else (sky[1], sky[2])
-            lv = [min(RAW_WHITE - 1500, s * seconds * g * grad * gain + 0.03 * heat) for s in pair]
-            sd = [math.sqrt(read * read + v) for v in lv]
+            colors = (0, 1) if y % 2 == 0 else (1, 2)                   # R G | G B
+            lv = [sky[c] * seconds * g * grad * gain + (panel[c] if panel else 0) for c in colors]
+            sd = [math.sqrt(read * read + v + dc) for v in lv]
             o = self.rnd.randrange(len(self.noise) - RAW_W)
-            ns = self.noise[o:o + RAW_W]
+            ns, vr = self.noise[o:o + RAW_W], self.vig[y]
             row = [0] * RAW_W
-            row[0::2] = [int(RAW_BLACK + c + lv[0] + n * sd[0]) for n, c in zip(ns[0::2], self.col[0::2])]
-            row[1::2] = [int(RAW_BLACK + c + lv[1] + n * sd[1]) for n, c in zip(ns[1::2], self.col[1::2])]
+            for p in (0, 1):
+                L, S = lv[p], sd[p]
+                row[p::2] = [min(RAW_WHITE, int(RAW_BLACK + c + min(top, L * v) + dc + n * S))
+                             for n, c, v in zip(ns[p::2], self.col[p::2], vr[p::2])]
             out.extend(row)
         for i, rate in self.hot:
             out[i] = min(RAW_WHITE, out[i] + int(rate * heat))
@@ -196,6 +228,8 @@ class Sensor:
         for k, (sx, sy, mag) in enumerate(stars):
             x, y = sx * RAW_W / SENSOR_W, sy * RAW_H / SENSOR_H
             amp = amp0 * 10 ** (-0.4 * (mag - 1))
+            if 0 <= x < RAW_W and 0 <= y < RAW_H:
+                amp *= self.vig[int(y)][int(x)]
             if amp < 3 or not (r <= x < RAW_W - r - 1 and r <= y < RAW_H - r - 1):
                 continue
             u = ((k * 7919) % 100) / 50 - 1                             # Sternfarbe −1 (blau) … 1 (rot)
@@ -250,6 +284,12 @@ def dng_bytes(pixels, meta):
     exp = meta["exposure"]
     exif_entries = [(0x829A,) + rational(exp), (0x8827,) + short(meta["iso"]),
                     (0x9003,) + ascii_(meta["time"]), (0x9400,) + rational(meta["temp"], signed=True)]
+    if meta.get("fnumber"):
+        exif_entries.append((0x829D,) + rational(meta["fnumber"]))
+    if meta.get("focal"):
+        exif_entries.append((0x920A,) + rational(meta["focal"]))
+    if meta.get("lens"):
+        exif_entries.append((0xA434,) + ascii_(meta["lens"]))
     if sys.byteorder != "little":
         pixels = array.array("H", pixels)
         pixels.byteswap()
@@ -312,7 +352,7 @@ class Camera:
         self.args = args
         self.lock = threading.RLock()
         self.props = {P_ISO: 0x70, P_APERTURE: 0x10, P_SHUTTER: 0x6D,
-                      P_AEMODE: MODE_B if args.mode == "B" else MODE_M,
+                      P_AEMODE: MODES[args.mode.upper()],
                       P_DEST: 4, P_EVF_OUT: 0, P_EVF_MODE: 0}
         self.events = []
         self.stars = make_stars()
@@ -328,6 +368,7 @@ class Camera:
         self.frozen = False
         self.cap = args.cap                  # Objektivdeckel drauf (Darks, Bias)
         self.ambient = args.temp             # Umgebungstemperatur; die Kamera erwärmt sich beim Belichten
+        self.panel = args.panel              # gleichmäßige Leuchtfläche vor dem Objektiv (Flats)
         self.heat, self.heat_time = 0.0, time.time()
         self.sky_t0 = time.time()
         self.sensor = None
@@ -375,9 +416,19 @@ class Camera:
 
     def set_mode(self, mode):
         with self.lock:
-            self.props[P_AEMODE] = MODE_B if mode == "B" else MODE_M
+            self.props[P_AEMODE] = MODES.get(mode.upper(), MODE_M)
             self.events += [self.prop_event(P_AEMODE), self.avail_event(P_SHUTTER), self.prop_event(P_SHUTTER)]
         self.log("Moduswahlrad auf", mode)
+
+    def auto_exposure(self):
+        """Zeitautomatik (Av): die Leuchtfläche auf AV_TARGET, sonst (Nachthimmel) 1/50 s."""
+        p = self.props
+        if self.panel and not self.cap:
+            light = (2.8 / f_number(p[P_APERTURE])) ** 2
+            t = AV_TARGET * (RAW_WHITE - RAW_BLACK) / (PANEL_RATE * iso_value(p[P_ISO]) / 1600 * light)
+        else:
+            t = 1 / 50
+        return min(30.0, max(1 / 4000, t))
 
     def sigma(self):
         return 1.4 + 0.12 * abs(self.focus)          # Sterngröße in Sensorpixeln
@@ -406,7 +457,7 @@ class Camera:
             self.exposure = {"start": time.time(), "bulb": True}
             self.log("● Bulb-Belichtung läuft")
         else:
-            t = shutter_seconds(self.props[P_SHUTTER])
+            t = self.auto_exposure() if self.props[P_AEMODE] == MODE_AV else shutter_seconds(self.props[P_SHUTTER])
             self.exposure = {"start": time.time(), "bulb": False}
             self.log("● Belichtung %.2f s" % t)
             timer = threading.Timer(t, self.end_exposure, args=(t,))
@@ -430,20 +481,25 @@ class Camera:
         temp = self.temperature()
         self.heat = min(12.0, self.heat + seconds / 60 * 0.8)             # Sensor erwärmt sich
         sky_time = (time.time() - seconds / 2 - self.sky_t0) * self.args.sky_speed
-        stars = [] if self.cap else sky_stars(self.stars, sky_time)
+        lit = self.panel and not self.cap                # Leuchtfläche vor dem Objektiv (Flats)
+        stars = [] if self.cap or lit else sky_stars(self.stars, sky_time)
         light = (2.8 / f_number(p[P_APERTURE])) ** 2
         gain = min(8.0, max(0.15, seconds * iso_value(p[P_ISO]) / 3200 * light))
         buf = render(PHOTO_W, PHOTO_H, (0, 0, SENSOR_W, SENSOR_H), stars, self.sigma(),
-                     gain=gain, bg=2 if self.cap else min(140, 8 + 8 * gain))
+                     gain=gain, bg=2 if self.cap else 190 if lit else min(140, 8 + 8 * gain))
         jpeg = to_jpeg(PHOTO_W, PHOTO_H, buf, 90)
         files = [("JPG", 0x3801, jpeg)]
         if self.args.raw:                            # RAW+JPEG: erst die CR2, dann die JPG (wie die Kamera)
             if self.sensor is None:
                 self.sensor = Sensor()
-            pixels = self.sensor.frame(seconds, iso_value(p[P_ISO]), temp, sky=None if self.cap else (4, 9, 6.3),
-                                       stars=stars, sigma=1.1 + 0.03 * abs(self.focus), gain=light)
+            level = PANEL_RATE * seconds * iso_value(p[P_ISO]) / 1600 * light
+            pixels = self.sensor.frame(seconds, iso_value(p[P_ISO]), temp,
+                                       sky=None if self.cap or lit else (4, 9, 6.3), stars=stars,
+                                       sigma=1.1 + 0.03 * abs(self.focus), gain=light,
+                                       panel=tuple(level * c for c in PANEL_COLOR) if lit else None)
             meta = {"exposure": seconds, "iso": int(round(iso_value(p[P_ISO]))), "temp": temp,
-                    "time": time.strftime("%Y:%m:%d %H:%M:%S")}
+                    "time": time.strftime("%Y:%m:%d %H:%M:%S"), "fnumber": round(f_number(p[P_APERTURE]), 1),
+                    "focal": FOCAL, "lens": LENS}
             files.insert(0, ("CR2", 0xB103, dng_bytes(pixels, meta)))
         with self.lock:
             number = self.next_img
@@ -740,7 +796,7 @@ class Server:
 
 # ---------------------------------------------------------------- Tastatur-Steuerung
 HELP = """Befehle:
-  mode B | mode M   Moduswahlrad stellen
+  mode B | M | Av   Moduswahlrad stellen (Av: Zeitautomatik, für Flats)
   drop              Verbindung trennen (wie WLAN-Abbruch)
   freeze / wake     Kamera antwortet nicht mehr / wieder
   restart           Fernsteuerung sofort wieder bereit
@@ -749,6 +805,7 @@ HELP = """Befehle:
   cap on | cap off  Objektivdeckel drauf (Darks, Bias) / ab
   temp N            Umgebungstemperatur in °C (Wärmesignal der RAWs)
   raw on | raw off  zusätzlich RAW je Aufnahme
+  panel on | off    gleichmäßige Leuchtfläche vor dem Objektiv (Flats)
   status            Zustand anzeigen"""
 
 
@@ -803,11 +860,16 @@ def command(cam, server, line):
         elif c == "raw" and len(cmd) > 1:
             cam.args.raw = cmd[1].lower() in ("on", "an", "1")
             cam.log("RAW+JPEG" if cam.args.raw else "nur JPEG")
+        elif c in ("panel", "flat", "licht") and len(cmd) > 1:
+            cam.panel = cmd[1].lower() in ("on", "an", "1")
+            cam.log("Leuchtfläche vor dem Objektiv" if cam.panel else "Leuchtfläche weg")
         elif c == "status":
-            cam.log("verbunden=%s Session=%s Modus=%s Livebild=%s Lupe=%d× Fokus=%d Bilder=%d Deckel=%s %.1f °C" % (
-                bool(server.cmd_sock), cam.session, "B" if cam.props[P_AEMODE] == MODE_B else "M",
-                cam.props[P_EVF_OUT] == 2, cam.zoom, cam.focus, len(cam.objects), "drauf" if cam.cap else "ab",
-                cam.temperature()))
+            mode = next((k for k, v in MODES.items() if v == cam.props[P_AEMODE]), "?")
+            cam.log("verbunden=%s Session=%s Modus=%s Livebild=%s Lupe=%d× Fokus=%d Bilder=%d Deckel=%s "
+                    "Leuchtfläche=%s %.1f °C" % (
+                        bool(server.cmd_sock), cam.session, mode, cam.props[P_EVF_OUT] == 2, cam.zoom, cam.focus,
+                        len(cam.objects), "drauf" if cam.cap else "ab", "an" if cam.panel else "aus",
+                        cam.temperature()))
         else:
             print(HELP, flush=True)
 
@@ -816,7 +878,7 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Simulierte Canon EOS 6D (PTP/IP)")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=15741)
-    p.add_argument("--mode", choices=["B", "M"], default="B", help="Moduswahlrad beim Start")
+    p.add_argument("--mode", choices=["B", "M", "Av"], default="B", help="Moduswahlrad beim Start")
     p.add_argument("--init-delay", type=float, default=4.0, help="Sekunden bis zur Anmeldebestätigung")
     p.add_argument("--idle-timeout", type=float, default=30, help="trennt ohne Befehle nach N s (0 = nie)")
     p.add_argument("--restart-delay", type=float, default=3, help="Port zu nach dem Trennen für N s")
@@ -826,6 +888,7 @@ def parse_args(argv=None):
     p.add_argument("--reject", action="store_true", help="jede Anmeldung ablehnen (InitFail 0x1)")
     p.add_argument("--raw", action="store_true", help="RAW+JPEG: pro Aufnahme eine .CR2 (DNG-Inhalt) und eine .JPG")
     p.add_argument("--cap", action="store_true", help="Objektivdeckel drauf (Darks, Bias)")
+    p.add_argument("--panel", action="store_true", help="Leuchtfläche vor dem Objektiv (Flats)")
     p.add_argument("--temp", type=float, default=10.0, help="Umgebungstemperatur in °C")
     p.add_argument("--sky-speed", type=float, default=1.0, help="Himmelsdrehung beschleunigen (1 = echt)")
     p.add_argument("--control", metavar="DATEI", help="Befehle aus dieser Datei lesen (wie die Konsole)")

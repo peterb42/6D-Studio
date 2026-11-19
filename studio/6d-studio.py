@@ -5,7 +5,7 @@ Ein Prozess hält die PTP/IP-Verbindung zur Kamera und bietet:
   * Bedienoberfläche   http://127.0.0.1:8066
       Livebild mit 5×/10×-Lupe der Kamera, Fokusantrieb, Schärfe-Anzeige für Sterne,
       Bulb Start/Stopp mit Timer, ISO/Blende/Zeit, automatischer Download,
-      Serien für Stacking, Live-Stack und Dark-/Bias-Bibliothek (die letzten beiden brauchen numpy und
+      Serien für Stacking, Live-Stack und Kalibrier-Bibliothek (die letzten beiden brauchen numpy und
       rawpy aus der venv – siehe requirements.txt).
   * Zugang für gphoto2 über ptpip:127.0.0.1 (wird vom Skript 6d-fernsteuerung genutzt).
 
@@ -337,6 +337,7 @@ class Studio:
         self.master_job = None              # Master-Erstellung (läuft im Hintergrund)
         self.last_light = None              # ISO, Zeit, Temperatur der letzten Lights (für passende Darks)
         self.used_index = {}                # (Ordner, Typ) → höchste vergebene Bildnummer (Downloads hinken nach)
+        self.last_flat = None               # ISO, Zeit (Median), Blende, Helligkeit der letzten Flats (für Dark-Flats)
         # Verbindung
         self.cam_cmd = self.cam_evt = None
         self.cli_cmd = self.cli_evt = None
@@ -956,6 +957,8 @@ class Studio:
         exposure = float(body.get("exposure") or 0) if bulb else None
         if bulb and ftype in ("bias", "flat", "darkflat"):
             raise CameraError("%s: Moduswahlrad auf %s stellen" % (label, "Av" if ftype == "flat" else "M"))
+        if ftype in ("bias", "darkflat") and self.props.get(P_AEMODE) not in (None, 3):
+            raise CameraError("%s: Moduswahlrad auf M stellen – das Studio stellt die Zeit ein" % label)
         if bulb and exposure <= 0:
             raise CameraError("Belichtungszeit für Bulb angeben")
         download = body.get("download", "all" if ftype == "light" else "none")
@@ -981,12 +984,12 @@ class Studio:
                                   % ("%g s" % exp if bulb else fmt_shutter(self.props.get(P_SHUTTER))))
         if ftype == "bias":                                          # kürzeste Zeit einstellen
             fastest = max(self.avail.get(P_SHUTTER) or [0])
-            if fastest and self.props.get(P_SHUTTER) != fastest:
-                self.set_prop(P_SHUTTER, fastest, name="Belichtungszeit")
-                self.log("Bias: Belichtungszeit → %s" % fmt_shutter(fastest))
-                end = time.time() + 5                  # bis die Kamera den neuen Wert meldet (für den Dateinamen)
-                while self.props.get(P_SHUTTER) != fastest and time.time() < end:
-                    time.sleep(0.05)
+            if fastest:
+                if self.props.get(P_SHUTTER) != fastest:
+                    self.log("Bias: Belichtungszeit → %s" % fmt_shutter(fastest))
+                self._set_and_wait(P_SHUTTER, fastest, "Belichtungszeit")     # immer: die Anzeige kann hinterherhinken
+        if ftype == "darkflat" and self.last_flat:                   # ISO und Zeit der Flats einstellen
+            self._match_flats()
         now = time.time()
         target = astro.safe_name(body.get("target"))
         session = astro.session_dir(ASTRO_DIR, target, now)
@@ -1005,6 +1008,29 @@ class Studio:
             count, label, fmt_duration(exposure) if bulb else "Kamerazeit " + fmt_shutter(self.props.get(P_SHUTTER)),
             folder.replace(os.path.expanduser("~"), "~"), " – danach Master für die Bibliothek" if master else ""))
         threading.Thread(target=self.series_thread, daemon=True).start()
+
+    def _set_and_wait(self, code, value, name):
+        self.set_prop(code, value, name=name)
+        end = time.time() + 5                      # bis die Kamera den neuen Wert meldet (für den Dateinamen)
+        while self.props.get(code) != value and time.time() < end:
+            time.sleep(0.05)
+
+    def _match_flats(self):
+        """Dark-Flats brauchen ISO und Belichtungszeit der Flats – das Studio stellt beides ein. Immer senden, auch
+        wenn die Werte schon zu stimmen scheinen: eine Änderung an der Kamera kann noch unterwegs sein."""
+        lf = self.last_flat
+        parts = []
+        iso = next((c for c in self.avail.get(P_ISO) or [] if fmt_iso(c) == str(lf.get("iso"))), None)
+        if iso:
+            self._set_and_wait(P_ISO, iso, "ISO")
+            parts.append("ISO " + fmt_iso(iso))
+        codes = [c for c in self.avail.get(P_SHUTTER) or [] if shutter_seconds(c)]
+        if lf.get("exposure") and codes:
+            best = min(codes, key=lambda c: abs(math.log(shutter_seconds(c) / lf["exposure"])))
+            self._set_and_wait(P_SHUTTER, best, "Belichtungszeit")
+            parts.append(fmt_shutter(best))
+        if parts:
+            self.log("Dark-Flats wie die Flats: %s" % ", ".join(parts))
 
     def act_series_stop(self, body):
         s = self.series
@@ -1053,7 +1079,7 @@ class Studio:
         frame = {
             "base": astro.frame_name(s["type"], s["target"], start, fmt_iso(p.get(P_ISO)), planned,
                                      fmt_aperture(p.get(P_APERTURE)), index),
-            "type": s["type"], "index": index, "session": s["session"], "folder": s["folder"],
+            "type": s["type"], "index": index, "session": s["session"], "folder": s["folder"], "sid": s["started"],
             "download": s["download"], "start": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start)),
             "planned": planned, "exposure": None, "iso": fmt_iso(p.get(P_ISO)),
             "aperture": fmt_aperture(p.get(P_APERTURE)), "shutter": fmt_shutter(shutter),
@@ -1108,8 +1134,8 @@ class Studio:
         session = session or astro.session_dir(ASTRO_DIR, body.get("target"), time.time())
         opts = {k: body.get(k) for k in livestack.LiveStack.OPTIONS}
         self.live = livestack.LiveStack(self.library, os.path.join(session, "livestack"), opts, self.log)
-        self.log("▶︎ Live-Stack an – jedes neue Light wird eingerechnet (Kalibrierung: Bias %s, Dark %s)" % (
-            opts.get("bias") or "auto", opts.get("dark") or "auto"))
+        self.log("▶︎ Live-Stack an – jedes neue Light wird eingerechnet (Kalibrierung: Bias %s, Dark %s, Flat %s)" % (
+            opts.get("bias") or "auto", opts.get("dark") or "auto", opts.get("flat") or "auto"))
 
     def act_live_stop(self, body):
         self._live_or_error().finish()
@@ -1175,7 +1201,8 @@ class Studio:
         except ValueError as e:
             raise CameraError(str(e)) from None
         job = self._new_master_job(kind, body.get("session"))
-        threading.Thread(target=self._build_masters, args=(job, files), daemon=True).start()
+        threading.Thread(target=self._build_masters, args=(job, files), daemon=True,
+                         kwargs={"by_exposure": kind != "flat", "source": body.get("session")}).start()
 
     def _new_master_job(self, kind, source):
         job = {"active": True, "kind": kind, "label": calib.KINDS[kind]["label"], "source": source,
@@ -1197,27 +1224,53 @@ class Studio:
                 break                                    # nichts mehr unterwegs (z. B. Kamera nur auf JPEG)
             time.sleep(0.5)
         exposure = s["exposure"] if s["bulb"] else None
-        self._build_masters(job, list(s["files"]), exposure=exposure, by_exposure=False)
+        self._build_masters(job, sorted(s["files"]), exposure=exposure, by_exposure=False,
+                            source=os.path.basename(s["session"]))
 
-    def _build_masters(self, job, files, exposure=None, by_exposure=True):
+    def _build_masters(self, job, files, exposure=None, by_exposure=True, source=None):
+        """Masters bauen (im Hintergrund). Flats: liegen Dark-Flats in derselben Sitzung, aber noch kein Master
+        davon, entsteht der zuerst. Dark-Flats: danach die Master-Flats der Sitzung neu – jetzt mit Dark-Flat."""
         try:
-            groups = [g for g in calib.group_frames(files, by_exposure) if len(g[2]) >= calib.MIN_FRAMES]
-            if not groups:
-                raise ValueError("Zu wenige RAW-Dateien (mindestens %d mit gleicher ISO%s) – Kamera auf RAW stellen?"
-                                 % (calib.MIN_FRAMES, " und Zeit" if by_exposure else ""))
-            for iso, _, frames in groups:
-                job["group"] = "ISO %s, %d Bilder" % (iso, len(frames))
-
-                def progress(phase, done, total):
-                    job.update(phase=phase, done=done, total=total)
-                entry = calib.build_master(self.library, job["kind"], frames, progress, self.log, exposure)
-                job["results"].append(entry)
+            kind = job["kind"]
+            if kind == "flat" and source and not any(e["kind"] == "darkflat" and e["source"] == source
+                                                     for e in self.library.list()):
+                darkflats = calib.source_files(ASTRO_DIR, source, "darkflats")
+                if sum(imaging.kind_of(p) == "raw" for p in darkflats) >= calib.MIN_FRAMES:
+                    self._build_groups(job, "darkflat", darkflats, None, False, source)
+            self._build_groups(job, kind, files, exposure, by_exposure, source)
+            if kind == "darkflat" and source:
+                self._rebuild_flats(job, source)
             job["phase"] = "fertig"
         except Exception as e:
             job["error"], job["phase"] = str(e), "Fehler"
             self.log("❌ Master-%s: %s" % (job["label"], e))
         finally:
             job["active"] = False
+
+    def _build_groups(self, job, kind, files, exposure, by_exposure, source):
+        groups = [g for g in calib.group_frames(files, by_exposure) if len(g[2]) >= calib.MIN_FRAMES]
+        if not groups:
+            raise ValueError("Zu wenige RAW-Dateien (mindestens %d mit gleicher ISO%s) – Kamera auf RAW stellen?"
+                             % (calib.MIN_FRAMES, " und Zeit" if by_exposure else ""))
+
+        def progress(phase, done, total):
+            job.update(phase=phase, done=done, total=total)
+        for iso, _, frames in groups:
+            job["group"] = "%s · ISO %s, %d Bilder" % (calib.KINDS[kind]["label"], iso, len(frames))
+            first = os.path.basename(frames[0][0])
+            for e in self.library.list():                  # dieselben Bilder schon einmal → Master ersetzen
+                if source and e["kind"] == kind and e["source"] == source and e["first"] == first:
+                    self.library.delete(e["id"])
+                    self.log("Wird neu erstellt: %s" % e["name"])
+            entry = calib.build_master(self.library, kind, frames, progress, self.log, exposure, source=source)
+            job["results"].append(entry)
+
+    def _rebuild_flats(self, job, session):
+        """Nach neuen Dark-Flats: Master-Flats dieser Sitzung neu erstellen – jetzt mit Dark-Flat statt Bias."""
+        files = calib.source_files(ASTRO_DIR, session, "flats")
+        if sum(imaging.kind_of(p) == "raw" for p in files) >= calib.MIN_FRAMES:
+            self.log("Master-Flat der Sitzung wird mit dem neuen Dark-Flat neu erstellt")
+            self._build_groups(job, "flat", files, None, False, session)
 
     # ---------- Download
     def download_worker(self):
@@ -1287,6 +1340,8 @@ class Studio:
         kind = imaging.kind_of(path)
         if frame and kind == "raw":
             frame["files"].append(path)
+            if frame["type"] == "flat":
+                self._flat_feedback(path, frame)
         if (frame and frame["type"] != "light") or kind not in ("raw", "jpeg"):
             return
         meta = imaging.read_meta(path)
@@ -1295,10 +1350,37 @@ class Studio:
         with self.lock:
             last = self.last_light or {}
             self.last_light = {"iso": iso, "exposure": exposure, "time": time.time(),
-                               "temp": meta["temp"] if meta["temp"] is not None else last.get("temp")}
+                               "temp": meta["temp"] if meta["temp"] is not None else last.get("temp"),
+                               "fnumber": meta["fnumber"], "focal": meta["focal"], "lens": meta["lens"]}
         live = self.live
         if live and live.active:
             live.add(path, {"exposure": frame["exposure"] if frame else None})
+
+    def _flat_feedback(self, path, frame):
+        """Je RAW-Flat: Helligkeit messen (ideal 30–60 %) und ISO/Zeit für passende Dark-Flats merken."""
+        meta = imaging.read_meta(path)
+        level = None
+        if imaging.missing() is None:
+            try:
+                level = round(calib.flat_level(path), 3)
+            except Exception as e:
+                self.log("⚠️ Flat-Helligkeit nicht messbar: %r" % e)
+        with self.lock:
+            s = self.series if self.series and self.series["started"] == frame.get("sid") else None
+            exps = s.setdefault("flat_exps", []) if s is not None else []
+            if meta["exposure"]:
+                exps.append(meta["exposure"])
+            if s is not None and level is not None:
+                s["flat_level"] = level
+            median_exp = sorted(exps)[len(exps) // 2] if exps else meta["exposure"]
+            self.last_flat = {"iso": meta["iso"], "exposure": median_exp, "fnumber": meta["fnumber"],
+                              "focal": meta["focal"], "level": level, "time": time.time()}
+        if level is not None and len(exps) <= 1:                   # beim ersten Flat sofort Bescheid geben
+            lo, hi = calib.FLAT_LEVEL
+            self.log(("✔︎ Flat-Helligkeit %d %%" if lo <= level <= hi else
+                      "⚠️ Flat-Helligkeit %d %% – " + ("zu dunkel: Belichtungskorrektur +1…+2 EV" if level < lo
+                                                       else "zu hell: −1 EV oder Lichtquelle dunkler"))
+                     % round(100 * level))
 
     def fetch_object(self, handle, size, name):
         """Bild laden – in Stücken (GetPartialObject), damit Bulb-Befehle dazwischen drankommen.
@@ -1338,7 +1420,7 @@ class Studio:
                 dl = dict(self.downloading, got=max(got, self.downloading.get("got", 0)))
             series = None
             if self.series:
-                series = {k: v for k, v in self.series.items() if k not in ("session", "files")}
+                series = {k: v for k, v in self.series.items() if k not in ("session", "files", "flat_exps")}
                 series["folder"] = self.series["folder"].replace(os.path.expanduser("~"), "~")
                 series["loaded"] = len(self.series["files"])
             fps = 0.0
@@ -1359,7 +1441,7 @@ class Studio:
                 "live": self.live.status() if self.live else None,
                 "imaging": imaging.missing(), "library_seq": self.library.seq,
                 "master_job": dict(self.master_job) if self.master_job else None,
-                "last_light": self.last_light,
+                "last_light": self.last_light, "last_flat": self.last_flat,
                 "out": OUT, "log": list(self.logs)[-40:],
             }
 

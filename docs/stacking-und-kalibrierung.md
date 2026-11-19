@@ -1,8 +1,8 @@
 # Serien für Stacking, Kalibrierbilder und Live-Stacking
 
-Stand 18.11.2026. Teil 1 beschreibt die Serien. Teil 2 ist der empfohlene Ablauf für eine Nacht. Teil 3
-vergleicht, wie andere Programme live stacken. Teil 4 beschreibt den Live-Stack von 6D Studio, Teil 5 die
-Dark-/Bias-Bibliothek mit geführter Aufnahme.
+Stand 19.11.2026. Teil 1 beschreibt die Serien. Teil 2 ist der empfohlene Ablauf für eine Nacht. Teil 3
+vergleicht, wie andere Programme live stacken. Teil 4 beschreibt den Live-Stack von 6D Studio mit Bildanalyse,
+Teil 5 die Kalibrier-Bibliothek (Bias, Darks, Flats, Dark-Flats) mit geführter Aufnahme.
 
 ## 1. Serie für Stacking in 6D Studio
 
@@ -99,7 +99,7 @@ Eigene Pipeline mit numpy und rawpy (`studio/livestack.py`), angelehnt an **Open
 „Satelliten entfernen“, Streckung nur für die Anzeige) und **Siril** (Dark-Optimierung, kosmetische Korrektur,
 Ausrichtung mit Drehung). Siril selbst wird nicht gebraucht – aber alle Ergebnisse sind FITS, die Siril direkt liest.
 
-**Bedienung:** Karte „Live-Stack“ → Bias/Dark wählen (Vorgabe: automatisch aus der Bibliothek) → **Starten**.
+**Bedienung:** Karte „Live-Stack“ → Bias/Dark/Flat wählen (Vorgabe: automatisch aus der Bibliothek) → **Starten**.
 Danach wird jedes Light eingerechnet, das auf den Mac kommt (Serie oder einzelne Bulb-Aufnahme). Oben
 „Anzeige: Live-Stack“ (Taste <kbd>V</kbd>) zeigt das Ergebnis, darunter Helligkeit und Schwarzpunkt (nur Anzeige).
 **Beenden & speichern** schreibt `LIVESTACK_<Zeit>_<n>x<Zeit>_raw.fits` (linear, 32 Bit) und `.png` (gestreckt)
@@ -112,12 +112,13 @@ praktisch zum Ausprobieren ohne Kamera.
 |---|---|---|
 | 1. Bias abziehen | Master-Bias gleicher ISO, sonst Schwarzwert der Kamera (2047) | Siril „=2048“ |
 | 2. Dark abziehen | Wärmesignal = Master-Dark − Bias, mal **k**. Dark-Optimierung: k ∈ [0, 4] per Goldener-Schnitt-Suche (Toleranz 0,001), kleinste Streuung im 512×512-Feld der Bildmitte, je Farbe des Bayer-Musters – **ohne die Pixel der Hotpixel-Karte** (Schritt 3 ersetzt sie ohnehin) | Siril `-opt` |
-| 3. Hotpixel | aus dem Wärmesignal (Median + 5σ, höchstens 1 %), ersetzt durch die 4 gleichfarbigen Nachbarn; dazu ein Filter je Bild für Reste und kosmische Strahlung (Sterne bleiben, weil ihr Licht mehrere Pixel trifft) | Siril „cosmetic correction“ |
-| 4. Debayer | Superpixel (halbe Auflösung, 6D: 2748 × 1835) | Siril „Superpixel“ |
-| 5. Ausrichten | bis 100 Sterne (Blockhintergrund, 5σ, Schwerpunkt), Dreiecke aus je 5 Nachbarn, log. Seitenverhältnisse vergleichen → grobe Ähnlichkeit (Verschiebung + Drehung); dann **Homographie** über alle Sterne, Toleranz schrittweise 16 → 2 px | astroalign, Siril `-transf=homography` |
-| 6. Mitteln | bilinear auf das erste Bild verzerren, laufender Mittelwert mit Abdeckung je Pixel; optional hellsten Wert je Pixel verwerfen | OpenLiveStacker „Remove Satellites“ |
-| 7. Anzeige | **Hintergrund ebnen** (Ebene + radiale Vignettierung, an Block-Mediane angepasst, helle Bereiche ausgespart), Weißabgleich der Kamera, Midtones Transfer Function je Farbe (Schatten: Median − 2,8 · MAD, Hintergrund auf 25 %) | Siril/PixInsight Autostretch, Siril Hintergrundextraktion |
-| 8. Bildanalyse | alle 10 Bilder, am Ende und per „Bild prüfen“ – siehe unten | – |
+| 3. Flat teilen | durch den Master-Flat, **je Farbkanal des Bayer-Musters auf 1 normiert** (Median der Bildmitte) – gleicht Vignettierung und Staubschatten aus, ohne die Farben zu verschieben, auch wenn die Lichtquelle farbig war; Werte unter 0,05 (tote Ecken) werden nicht geteilt | Siril `-flat`, `-equalize_cfa` |
+| 4. Hotpixel | aus dem Wärmesignal (Median + 5σ, höchstens 1 %), ersetzt durch die 4 gleichfarbigen Nachbarn; dazu ein Filter je Bild für Reste und kosmische Strahlung (Sterne bleiben, weil ihr Licht mehrere Pixel trifft) | Siril „cosmetic correction“ |
+| 5. Debayer | Superpixel (halbe Auflösung, 6D: 2748 × 1835) | Siril „Superpixel“ |
+| 6. Ausrichten | bis 100 Sterne (Blockhintergrund, 5σ, Schwerpunkt), Dreiecke aus je 5 Nachbarn, log. Seitenverhältnisse vergleichen → grobe Ähnlichkeit (Verschiebung + Drehung); dann **Homographie** über alle Sterne, Toleranz schrittweise 16 → 2 px | astroalign, Siril `-transf=homography` |
+| 7. Mitteln | bilinear auf das erste Bild verzerren, laufender Mittelwert mit Abdeckung je Pixel; optional hellsten Wert je Pixel verwerfen | OpenLiveStacker „Remove Satellites“ |
+| 8. Anzeige | **Hintergrund ebnen** (Ebene + radiale Vignettierung, an Block-Mediane angepasst, helle Bereiche ausgespart), Weißabgleich der Kamera, Midtones Transfer Function je Farbe (Schatten: Median − 2,8 · MAD, Hintergrund auf 25 %) | Siril/PixInsight Autostretch, Siril Hintergrundextraktion |
+| 9. Bildanalyse | alle 10 Bilder, am Ende und per „Bild prüfen“ – siehe unten | – |
 
 **Warum Homographie:** Auf dem Stativ dreht sich der Himmel um die Kamera. Ein (verzeichnungsfreies) Objektiv
 bildet eine solche Drehung exakt als projektive Abbildung ab (Bild = K·R·K⁻¹), nicht als Drehen + Verschieben.
@@ -130,7 +131,7 @@ Himmels. Was dunkler ist – Ecken mit Vignettierung, die Seite gegenüber der L
 abgeschnitten, umso mehr, je rauschärmer der Stapel wird. Gemessen: Ecken 15 % dunkler bei f/4. Das Ebnen
 wirkt nur auf die Anzeige und das PNG; im FITS bleibt alles linear, dort korrigieren Flats die Vignettierung.
 
-JPEGs gehen ab Schritt 4 ohne Kalibrierung (JPEGs sind nicht linear). Bilder mit weniger als 6 zugeordneten
+JPEGs gehen ab Schritt 5 ohne Kalibrierung (JPEGs sind nicht linear). Bilder mit weniger als 6 zugeordneten
 Sternen werden verworfen (Wolken, Verwackeln) und in der Liste mit Grund angezeigt.
 
 **Dark-Optimierung verstehen:** k ist der Faktor mit dem kleinsten Gesamtrauschen – nicht das reine
@@ -152,8 +153,9 @@ Kalibrierung und sagt, was zu tun ist – ✓ in Ordnung, i Hinweis, ! Verbesser
 | Dark – Rauschgrenze | Rauschen des Masters × k gegen Einzelbild: ab N ≈ (σ_Bild / (k·σ_Master))² Bildern begrenzt der Master | mehr Darks – die Grenze wächst mit ihrer Anzahl |
 | Rauschgewinn | Stapel-Rauschen vs. Einzelbild/√N (je Bild nach dem Verzerren gemessen) | festes Muster → passende Kalibrierung, Dithering |
 | Hintergrund | Vignettierung (Ecken vs. Mitte), Gradient, helle Bereiche je Neuntel, Überbelichtung | Flats; Lichtquelle/Wolke |
+| Flat | mit Master-Flat: was an Vignettierung übrig bleibt (ab ±5 %), Helligkeit der Flats | Rest dunkel: Blende/Fokus/Brennweite anders als bei den Lights; Ecken heller (Überkorrektur): Offset fehlt → Bias oder Dark-Flats, Master-Flat neu; Flats unter 20 %: Belichtungskorrektur +1…+2 EV |
 | Sterne | FWHM und Form in Mitte und Rand, Stapel vs. Einzelbild, Restfehler der Ausrichtung | Abblenden (Koma), Stativ/Wind |
-| Bilder | verworfene, Wolken (Hintergrund +20 % oder −40 % Sterne), Temperaturverlauf | Bilder aussortieren |
+| Bilder | verworfene, Wolken (Hintergrund +20 % oder −40 % Sterne), Temperaturverlauf; ab 3 verworfenen Bildern mit je 30+ Sternen: anderer Bildausschnitt | Bilder aussortieren; nach neuem Ausrichten „Neu beginnen“ |
 
 Ergebnis an der echten 6D (50 × 3 s, ISO 800, f/4): Darks 9 °C kälter (bei 3 s unkritisch), Master-Dark begrenzt
 ab ~56 Bildern (mit 50 statt 20 Darks ab ~140), Ecken 15 % dunkler, Rauschen sinkt wie √N, Sterne bis in die
@@ -165,19 +167,27 @@ Kamera-Thread wird dabei höchstens 7 ms aufgehalten (Bulb-Stopp bleibt pünktli
 der echten 6D: 0,22 px im Median.
 
 **Grenzen:** Mittelwert ohne Ausreißerverwerfung (außer „Satelliten“) – für das Endbild die RAWs in Siril
-stapeln. Keine Flats im Live-Stack (noch). Der Vordergrund verschmiert, weil auf die Sterne ausgerichtet wird.
+stapeln. Der Vordergrund verschmiert, weil auf die Sterne ausgerichtet wird.
 
-## 5. Dark- & Bias-Bibliothek
+## 5. Kalibrier-Bibliothek
 
 ```
 ~/Pictures/6D-Tethering/Astro/Bibliothek/
-  bias/   MASTER-BIAS_ISO3200_21C_n40_20261118-1530.fits
-  darks/  MASTER-DARK_ISO3200_30s_14C_n20_20261118-2350.fits
+  bias/       MASTER-BIAS_ISO3200_21C_n40_20261118-1530.fits
+  darks/      MASTER-DARK_ISO3200_30s_14C_n20_20261118-2350.fits
+  flats/      MASTER-FLAT_24mm_f4_ISO400_n25_20261119-0130.fits
+  darkflats/  MASTER-DARKFLAT_ISO400_1-50s_30C_n25_20261119-0140.fits
 ```
 
 Alle Angaben stehen im FITS-Kopf (`ISOSPEED`, `EXPTIME`, `CCD-TEMP`, `TEMPMIN/MAX`, `NCOMBINE`, `INSTRUME`,
-`DATE-OBS`, `BAYERPAT`, `MEDIAN`, `NOISE`, `HOTPIX`); 32-Bit-Gleitkomma 0…1 wie bei Siril. Die Karte zeigt die
-Masters als Tabelle; ✓ markiert, was zu den letzten Lights passt. Löschen per ✕.
+`DATE-OBS`, `BAYERPAT`, `MEDIAN`, `NOISE`, `HOTPIX`; Optik `FNUMBER`, `FOCALLEN`, `LENS`; bei Flats `FLATLVL`
+(Helligkeit), `VIGNET` (Lichtabfall zur Ecke), `FLATCAL` (was abgezogen wurde); `SOURCE`/`FIRSTIMG` (Sitzung und
+erstes Bild); 32-Bit-Gleitkomma 0…1 wie bei Siril. Die Karte zeigt die Masters als Tabelle (Spalte „Zeit / Optik“:
+bei Flats Brennweite und Blende); ✓ markiert, was zu den letzten Lights passt – bei Dark-Flats, was zu den letzten
+Flats passt. Löschen per ✕.
+
+**Optik** (Blende, Brennweite, Objektiv) kommt aus dem EXIF der CR2 (`FNumber`, `FocalLength`, `LensModel`).
+Manuelle Objektive ohne Kontakte melden keine Blende – dann zählt nur, was bekannt ist.
 
 **Sensortemperatur:** aus dem Canon-MakerNote der CR2 (CameraInfo, Byte 0x1B − 128 = °C). Für die 6D an einer
 echten CR2 geprüft – ISO, Blende und Zeit an den Nachbarpositionen stimmen mit den EXIF-Werten überein.
@@ -186,6 +196,18 @@ echten CR2 geprüft – ISO, Blende und Zeit an den Nachbarpositionen stimmen mi
 - **Bias:** gleiche ISO, das neueste.
 - **Dark:** gleiche ISO; zuerst gleiche Zeit (±5 %), dann die nächste Temperatur, dann das neueste. Mit
   Dark-Optimierung auch Darks mit 0,5- bis 4-facher Zeit (k gleicht aus), gleiche Zeit bleibt bevorzugt.
+- **Flat:** gleiche Optik – Blende (±6 %), Brennweite (±3 %) und Objektiv müssen passen, soweit beide sie kennen;
+  vollständig bekannte Optik zuerst, dann das neueste. ISO und Zeit spielen keine Rolle (der Flat wird normiert).
+  Passt keiner, rechnet der Live-Stack ohne Flat und sagt das in der Kalibrierzeile.
+- **Dark-Flat** (für den Master-Flat): gleiche ISO wie die Flats, Zeit ±25 % (Av schwankt um Drittelstufen),
+  nächste Temperatur, das neueste.
+
+**Master-Flat:** Von jedem Flat wird der Master-Dark-Flat abgezogen, sonst der Master-Bias gleicher ISO, sonst
+der Schwarzwert. Dann wird jedes Flat auf die Helligkeit des ersten gebracht (Median des Grüns im mittleren
+Drittel) – im Modus Av schwankt die Zeit, und eine Tablet-Lichtquelle flackert. Erst danach das κσ-Mittel wie
+unten. Gespeichert wird in ADU ohne Offset; die Helligkeit (Anteil bis zur Sättigung, ideal 30–60 %) und der
+Lichtabfall zur Ecke stehen im Kopf und in der Tabelle. Kommen Dark-Flats erst nach den Flats, baut das Studio
+den Master-Flat dieser Sitzung danach automatisch neu – jetzt mit Dark-Flat – und ersetzt den alten.
 
 **Master erstellen** (`calib.build_master`): zwei Durchgänge über die RAWs, ohne alle 20-MP-Bilder gleichzeitig
 im Speicher. Durchgang 1: robuste Mitte und Streuung je Pixel ohne Minimum und Maximum (bei 3–4 Bildern = Median;
@@ -195,24 +217,37 @@ heraus; ohne Ausreißer ist das Ergebnis gleich dem einfachen Mittel (Abweichung
 
 **Geführte Aufnahme** („Geführt aufnehmen …“):
 
-1. **Was?** Bias oder Darks – mit Erklärung, wann und wie viele.
-2. **Kamera vorbereiten.** Automatisch geprüft: Moduswahlrad (Bias: M, Darks: B oder M), ISO wie die letzten
-   Lights, Belichtungszeit wie die Lights, Temperatur der Lights. Darks unter 1 s sperrt der Assistent (auch der
-   Server und „Master erstellen“): Das wären nur Bias – typisch, wenn die Kamera nach den Bias noch auf 1/4000
-   steht. Gibt es noch keine Lights, erinnert er daran, die Zeit der Lights einzustellen. Zum Abhaken:
-   Objektivdeckel drauf, Sucher abgedeckt (Okularabdeckung am Gurt), **Rauschreduzierung bei Langzeitbelichtung
-   aus** (sonst macht die 6D nach jedem Bild selbst ein Dark), Bildqualität RAW.
-3. **Aufnehmen.** Anzahl (Bias 40, Darks 20) und bei Darks im Modus B die Zeit (vorbelegt mit der Zeit der
-   Lights); Anzeige der Dauer und der Download-Zeit (~25 s je RAW über den Hotspot). Die Serie lädt nur RAWs.
+1. **Was?** Bias, Darks, Flats oder Dark-Flats – mit Erklärung, wann und wie viele.
+2. **Kamera vorbereiten.** Automatisch geprüft:
+   - **Bias:** Moduswahlrad M, ISO wie die Lights; das Studio stellt 1/4000 ein.
+   - **Darks:** Moduswahlrad B oder M, ISO und Zeit wie die Lights, Temperatur der Lights. Darks unter 1 s sperrt
+     der Assistent (auch der Server und „Master erstellen“): Das wären nur Bias – typisch, wenn die Kamera nach den
+     Bias noch auf 1/4000 steht. Gibt es noch keine Lights, erinnert er daran, die Zeit der Lights einzustellen.
+   - **Flats:** Moduswahlrad Av (oder M), Blende wie die Lights (Warnung, wenn nicht), ISO bis 800. Nach dem
+     ersten Flat misst das Studio die Helligkeit und meldet „zu dunkel: +1…+2 EV“ oder „gut“.
+   - **Dark-Flats:** Moduswahlrad M; das Studio stellt ISO und Zeit der letzten Flats selbst ein. Bei Flats unter
+     1 s weist es darauf hin, dass der Master-Bias meist reicht.
+
+   Zum Abhaken je Typ, z. B. Objektivdeckel drauf, Sucher abgedeckt (Okularabdeckung am Gurt),
+   **Rauschreduzierung bei Langzeitbelichtung aus** (sonst macht die 6D nach jedem Bild selbst ein Dark),
+   Bildqualität RAW; bei Flats: gleichmäßige Lichtquelle, Fokus/Blende/Brennweite/Drehung unverändert,
+   Belichtungskorrektur +1 EV.
+3. **Aufnehmen.** Anzahl (Bias 40, Darks 20, Flats und Dark-Flats 25) und bei Darks im Modus B die Zeit (vorbelegt
+   mit der Zeit der Lights); Anzeige der Dauer und der Download-Zeit (~25 s je RAW über den Hotspot). Die Serie lädt
+   nur RAWs.
 4. **Master erstellen** startet von selbst, sobald alle RAWs auf dem Mac sind, und trägt den Master in die
    Bibliothek ein. Der nächste Live-Stack nimmt ihn automatisch.
 
-**Aus Ordner:** Liegen Darks/Bias schon in einem Sitzungsordner (z. B. von der Karte kopiert), baut „Master
-erstellen“ daraus Masters – gruppiert nach ISO und Zeit, je Gruppe ab 3 Bildern.
+**Aus Ordner:** Liegen Kalibrierbilder schon in einem Sitzungsordner (z. B. von der Karte kopiert), baut „Master
+erstellen“ daraus Masters – gruppiert nach ISO und Zeit (Flats nur nach ISO), je Gruppe ab 3 Bildern. Bei Flats
+entsteht zuerst der Master-Dark-Flat, wenn die Sitzung Dark-Flats enthält. Wird derselbe Ordner noch einmal
+gebaut, ersetzt der neue Master den alten.
 
 **Empfehlung:** Bias je benutzter ISO einmal zu Hause (40–50), hält lange. Darks am Ende jeder Nacht (15–30) mit
 der Zeit der Lights; über die Zeit wächst so eine Bibliothek über viele Temperaturen, aus der die Auswahl für
-spätere Nächte das passende Dark nimmt – die Dark-Optimierung gleicht den Rest aus.
+spätere Nächte das passende Dark nimmt – die Dark-Optimierung gleicht den Rest aus. **Flats in jeder Nacht** vor
+dem Abbauen (20–30): Staub wandert, und schon ein anderer Fokus ändert die Vignettierung. Dark-Flats nur bei
+Flat-Zeiten ab etwa 1 s.
 
 ## 6. Ohne Kamera ausprobieren
 
@@ -220,17 +255,27 @@ spätere Nächte das passende Dark nimmt – die Dark-Optimierung gleicht den Re
 6d-fernsteuerung sim --raw --sky-speed 60 --focus 0   # RAWs mit Sensordaten, Himmel dreht 60× schneller
 6d-fernsteuerung sim-cmd cap on                       # Deckel drauf → Darks/Bias
 6d-fernsteuerung sim-cmd temp 20                      # wärmer → mehr Wärmesignal
+6d-fernsteuerung sim-cmd mode Av                      # Zeitautomatik für Flats
+6d-fernsteuerung sim-cmd panel on                     # Leuchtfläche vor dem Objektiv → Flats
 ```
 
-Der Simulator erzeugt RAWs (DNG-Inhalt mit Endung .CR2, 1368 × 912) mit Offset und Spaltenmuster,
-Ausleserauschen, Hotpixeln (Wärmesignal verdoppelt sich alle 6 °C, wächst mit ISO und Zeit; die Kamera erwärmt
-sich beim Belichten), Lichtverschmutzung und Sternen, die sich um den Himmelspol drehen. Die Tests
-(`tests/test_livestack.py`, `tests/test_simulator.py`) prüfen damit u. a.: k = 0,5 bei 6 °C kälteren Lights,
-Drehung 3,76° nach 15 min, Master mit kosmischem Treffer, geführte Darks → Master → automatische Auswahl im
-Live-Stack.
+Der Simulator erzeugt RAWs (DNG-Inhalt mit Endung .CR2, 1368 × 912, mit Blende, Brennweite und Objektiv im EXIF):
+- Offset und Spaltenmuster, Ausleserauschen.
+- Hotpixel: Das Wärmesignal verdoppelt sich alle 6 °C und wächst mit ISO und Zeit; die Kamera erwärmt sich beim
+  Belichten.
+- Ein Objektiv mit Vignettierung (Ecken −30 %) und dem ringförmigen Schatten eines Staubkorns.
+- Lichtverschmutzung und Sterne, die sich um den Himmelspol drehen.
+- Im Modus Av belichtet er die Leuchtfläche automatisch auf 40 %.
 
-**Noch offen:** Flats/Dark-Flats im Live-Stack und als Masters; Abgleich der Anzeige zwischen RAW und JPEG; an der
-echten 6D: Download-Zeit der RAWs im Live-Betrieb und die Temperaturwerte über eine Nacht.
+Die Tests (`tests/test_livestack.py`, `tests/test_simulator.py`) prüfen damit u. a.:
+- k = 0,5 bei 6 °C kälteren Lights, Drehung 3,76° nach 15 min, Master mit kosmischem Treffer.
+- Geführte Darks → Master → automatische Auswahl im Live-Stack.
+- Master-Flat mit Dark-Flat: Normierung je Farbkanal, Staubring sichtbar, kein passender Flat bei anderer Blende.
+- Geführte Flats in Av → Rückmeldung 40 % → Dark-Flats mit von selbst gestellter ISO und Zeit → Master-Flat neu mit
+  Dark-Flat → Live-Stack wählt ihn, die Analyse meldet „Flat gleicht die Vignettierung aus“.
+
+**Noch offen:** Abgleich der Anzeige zwischen RAW und JPEG; an der echten 6D: Download-Zeit der RAWs im
+Live-Betrieb, die Temperaturwerte über eine Nacht und Flats mit echter Lichtquelle.
 
 ## Quellen
 

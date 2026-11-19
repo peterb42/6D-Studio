@@ -9,7 +9,8 @@ Je Bild (RAW, Werte in ADU):
      Goldener-Schnitt-Suche (Toleranz 0,001) so, dass die Streuung im 512×512-Feld der Bildmitte am kleinsten
      wird – ohne die Pixel der Hotpixel-Karte, die Schritt 3 ohnehin ersetzt. Gleicht Temperatur- und
      Zeitunterschiede zwischen Darks und Lights aus.
-  3. Hotpixel: aus dem Wärmesignal bestimmt und durch gleichfarbige Nachbarn ersetzt (Siril „cosmetic
+  3. Flat: durch den Master-Flat teilen (je Farbkanal auf 1 normiert) – gleicht Vignettierung und Staub aus.
+     Hotpixel: aus dem Wärmesignal bestimmt und durch gleichfarbige Nachbarn ersetzt (Siril „cosmetic
      correction“). Zusätzlich ein Filter je Bild für Reste und Treffer kosmischer Strahlung.
   4. Superpixel-Debayer (halbe Auflösung, 6D: 2748 × 1835).
   5. Sterne finden, per Dreiecks-Vergleich mit dem ersten Bild zuordnen (drehungsunabhängig), dann eine
@@ -30,6 +31,7 @@ import threading
 import time
 
 import astro
+import calib
 import imaging
 from imaging import np
 
@@ -40,6 +42,7 @@ MATCH_PX = 2.0              # Toleranz der Zuordnung (Pixel im Stapel)
 HOMOGRAPHY_MIN = 12         # ab so vielen Paaren projektiv ausrichten, darunter Drehen + Verschieben
 OPT_CROP = 512              # Feld für die Dark-Optimierung (wie Siril)
 K_MAX = 4.0                 # Dark-Faktor bis 4: Lights ~10 °C wärmer als die Darks (6D: 2,5–3,3 gemessen)
+FLAT_MIN = 0.05             # normierte Flat-Werte darunter nicht teilen (sonst explodiert das Rauschen)
 DISPLAY_W = 1600            # Breite des Anzeigebilds
 
 
@@ -78,6 +81,21 @@ def optimize_k(light, thermal, crop=OPT_CROP, hot=None):
         keep[ys[inside] - y0, xs[inside] - x0] = False
     parts = [(L[i::2, j::2][keep[i::2, j::2]], D[i::2, j::2][keep[i::2, j::2]]) for i in (0, 1) for j in (0, 1)]
     return golden_section(lambda k: sum(float(np.std(lp - k * dp)) for lp, dp in parts), 0.0, K_MAX)
+
+
+def normalize_flat(master):
+    """Master-Flat je Farbkanal des Bayer-Musters auf 1 normieren (Median der Bildmitte) – wie Sirils
+    -equalize_cfa: Das Flat gleicht nur Lichtabfall und Staub aus und verändert die Farben nicht, auch wenn die
+    Lichtquelle farbig war. Werte unter FLAT_MIN (tote Ecken) werden nicht geteilt."""
+    f = master.astype(np.float32)
+    h, w = f.shape
+    y0, x0 = h // 6 * 2, w // 6 * 2
+    for i in (0, 1):
+        for j in (0, 1):
+            m = float(np.median(f[y0 + i:h - y0:2, x0 + j:w - x0:2][::2, ::2]))
+            f[i::2, j::2] /= m if m > 0 else 1.0
+    np.maximum(f, FLAT_MIN, out=f)
+    return f
 
 
 def hot_pixels(thermal, sigma=5.0, max_fraction=0.01):
@@ -427,8 +445,8 @@ def shrink(img, covered, width=DISPLAY_W):
 class LiveStack:
     """Nimmt Bilddateien an (add), rechnet sie in einem eigenen Thread ein und hält das Anzeigebild bereit."""
 
-    OPTIONS = {"bias": "auto", "dark": "auto", "optimize": True, "hotpixels": True, "satellites": True,
-               "stretch": 0.25, "black": -2.8, "flatten": True}
+    OPTIONS = {"bias": "auto", "dark": "auto", "flat": "auto", "optimize": True, "hotpixels": True,
+               "satellites": True, "stretch": 0.25, "black": -2.8, "flatten": True}
     ANALYZE_EVERY = 10          # Bildanalyse nach so vielen Bildern (und am Ende)
 
     def __init__(self, library, out_dir, options=None, log=print, name="Live-Stack"):
@@ -535,7 +553,7 @@ class LiveStack:
                 self.history.appendleft(info)
                 if not info["ok"]:
                     self.rejected += 1
-                    self.rejects.append((info["name"], info["reason"]))
+                    self.rejects.append((info["name"], info["reason"], info.get("stars") or 0))
             if info["ok"]:
                 self.log("✚ Live-Stack %d: %s (%d Sterne, %.1f s)" % (self.frames, info["name"], info["matched"],
                                                                      info["s"]))
@@ -607,8 +625,11 @@ class LiveStack:
         if c["thermal"] is not None:
             k = optimize_k(x, c["thermal"], hot=c["hot"]) if self.opts["optimize"] else c["k_exp"]
             x -= np.float32(k) * c["thermal"]
-            fix_pixels(x, c["hot"])
             info["k"] = round(float(k), 3)
+        if c["flat"] is not None:
+            x /= c["flat"]
+        if c["hot"] is not None:
+            fix_pixels(x, c["hot"])
         if self.opts["hotpixels"]:
             info["hot"] = hot_filter(x)
 
@@ -618,7 +639,8 @@ class LiveStack:
             return None
         if choice == "auto":
             return self.library.best(kind, meta.get("iso"), meta.get("exposure"), meta.get("temp"),
-                                     frame.data.shape, meta.get("model"), optimize=self.opts["optimize"])
+                                     frame.data.shape, meta.get("model"), optimize=self.opts["optimize"],
+                                     optics=calib.optics_of(meta))
         e = self.library.get(choice)
         if e and (e["h"], e["w"]) != frame.data.shape:
             self.log("⚠️ %s passt nicht zur Bildgröße – wird nicht verwendet" % e["name"])
@@ -639,7 +661,9 @@ class LiveStack:
             thermal_level = float(np.median(thermal[::7, ::7]))      # Wärmesignal je Pixel (ADU)
             green = (thermal[0::2, 1::2] + thermal[1::2, 0::2]) / 2   # wie im Stapel (Superpixel)
             dark_noise = _robust(green)[1]
-        self.calib = {"bias": bias, "thermal": thermal, "hot": hot, "k_exp": k_exp}
+        flat_e = self._pick("flat", frame, meta)
+        flat = normalize_flat(imaging.read_fits(self.library.path(flat_e["id"]))[0]) if flat_e else None
+        self.calib = {"bias": bias, "thermal": thermal, "hot": hot, "k_exp": k_exp, "flat": flat}
         self.calib_info = {
             "bias": bias_e["name"] if bias_e else None, "dark": dark_e["name"] if dark_e else None,
             "dark_temp": dark_e["temp"] if dark_e else None, "dark_exposure": dark_e["exposure"] if dark_e else None,
@@ -649,11 +673,16 @@ class LiveStack:
             "dark_n": dark_e["n"] if dark_e else None,
             "thermal": round(thermal_level, 3) if thermal_level is not None else None,
             "dark_noise": round(dark_noise, 3) if dark_noise is not None else None,
+            "flat": flat_e["name"] if flat_e else None, "flat_n": flat_e["n"] if flat_e else None,
+            "flat_optics": calib.optics_label(flat_e) if flat_e else None,
+            "flat_level": flat_e["level"] if flat_e else None, "flat_vignette": flat_e["vignette"] if flat_e else None,
+            "flat_cal": flat_e["flatcal"] if flat_e else None, "optics": calib.optics_label(meta),
         }
-        self.log("Live-Stack Kalibrierung: Bias %s · Dark %s%s" % (
+        self.log("Live-Stack Kalibrierung: Bias %s · Dark %s%s · Flat %s" % (
             bias_e["name"] if bias_e else "– (Schwarzwert %d)" % frame.black,
             dark_e["name"] if dark_e else "–",
-            " · %d Hotpixel" % len(hot[0]) if hot is not None else ""))
+            " · %d Hotpixel" % len(hot[0]) if hot is not None else "",
+            flat_e["name"] if flat_e else "– (keiner passt zu %s)" % calib.optics_label(meta)))
 
     # ---------- Ergebnis
     def mean_image(self):

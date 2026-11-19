@@ -9,6 +9,7 @@ import os
 import struct
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -65,12 +66,21 @@ class TestMetadaten(unittest.TestCase):
 
     def test_simulator_raw_metadaten(self):
         px = sim.Sensor().frame(2, 1600, 12.5)
-        data = sim.dng_bytes(px, {"exposure": 2, "iso": 1600, "temp": 12.5, "time": "2026:11:18 23:14:05"})
+        data = sim.dng_bytes(px, {"exposure": 2, "iso": 1600, "temp": 12.5, "time": "2026:11:18 23:14:05",
+                                  "fnumber": 2.8, "focal": 24.0, "lens": "Simulator 24mm"})
         with tempfile.NamedTemporaryFile(suffix=".CR2", delete=False) as f:
             f.write(data)
         self.addCleanup(os.remove, f.name)
         m = imaging.read_meta(f.name)
         self.assertEqual((m["iso"], m["exposure"], m["temp"], m["time"]), (1600, 2.0, 12.5, "2026-11-18 23:14:05"))
+        self.assertEqual((m["fnumber"], m["focal"], m["lens"]), (2.8, 24.0, "Simulator 24mm"))
+
+    def test_optik_vergleich(self):
+        a = {"fnumber": 4.0, "focal": 24.0, "lens": "24mm"}
+        self.assertEqual(calib.optics_mismatch(a, dict(a)), (False, 0))
+        self.assertTrue(calib.optics_mismatch(a, dict(a, fnumber=2.8))[0])        # andere Blende
+        self.assertTrue(calib.optics_mismatch(a, dict(a, focal=35.0))[0])
+        self.assertEqual(calib.optics_mismatch(a, dict(a, fnumber=None)), (False, 1))   # manuelles Objektiv
 
     def test_fits_kopf_ohne_numpy(self):
         cards = "".join([imaging._card("SIMPLE", True), imaging._card("BITPIX", -32), imaging._card("NAXIS", 0),
@@ -218,8 +228,9 @@ class TestRechnung(unittest.TestCase):
         img = np.repeat(lum[..., None], 3, 2) - 250                  # Himmel ~50 ADU
         stats = [{"name": "LIGHT_x_%04d.CR2" % i, "temp": 38.0, "k": 0.5, "noise": 6.0, "bg": 50.0, "stars": 90,
                   "fwhm": 3.8, "rms": 0.2, "exposure": 30.0} for i in range(9)]
+        moved = [("LIGHT_x_%04d.CR2" % i, "Ausrichtung fehlgeschlagen (90 Sterne gefunden)", 90) for i in (38, 39, 40)]
         snap = {"img": img.astype(np.float32), "covered": np.ones((self.h, self.w), bool), "frames": 9,
-                "kind": "raw", "white": 13000.0, "stats": stats, "rejected": [], "iso": 1600, "exposure": 30.0,
+                "kind": "raw", "white": 13000.0, "stats": stats, "rejected": moved, "iso": 1600, "exposure": 30.0,
                 "calib": {"bias": None, "offset": 2047, "dark": "MASTER-DARK_x.fits", "dark_temp": 26.0,
                           "dark_n": 20, "dark_exposure": 30.0, "thermal": 2.0, "dark_noise": 0.5, "hot": 900},
                 "stack_noise": 6.0}                                    # kein Gewinn durchs Stapeln
@@ -228,6 +239,9 @@ class TestRechnung(unittest.TestCase):
         self.assertIn("Kein Master-Bias für ISO 1600", titles)
         self.assertEqual(titles["Darks 12 °C kälter als die Lights"]["level"], "warn")
         self.assertTrue(any(t.startswith("Stapeln bringt weniger als erwartet") for t in titles))
+        moved_item = titles["3 Bilder passen nicht zum Stapel – anderer Bildausschnitt?"]   # neu ausgerichtet
+        self.assertIn("Ab 0038", moved_item["text"])
+        self.assertIn("Neu beginnen", moved_item["advice"])
         self.assertEqual(res["items"][0]["level"], "warn")              # Wichtigstes zuerst
         self.assertTrue(all(i["advice"] for i in res["items"] if i["level"] == "warn"))
 
@@ -250,12 +264,13 @@ class TestRechnung(unittest.TestCase):
         self.assertLess(float(np.abs(imaging.read_fits(os.path.join(d, "r.fits"))[0] - rgb).max()), 0.01)
 
 
-def write_master(lib, kind, iso, exposure, temp, date, shape=(8, 12)):
+def write_master(lib, kind, iso, exposure, temp, date, shape=(8, 12), fnumber=None, focal=None):
     os.makedirs(lib.folder(kind), exist_ok=True)
-    name = "M_%s_%d_%s_%s_%s.fits" % (kind, iso, exposure, temp, date.replace(":", ""))
-    imaging.write_fits(os.path.join(lib.folder(kind), name), np.zeros(shape, np.float32),
-                       [("ISOSPEED", iso, ""), ("EXPTIME", float(exposure), ""), ("CCD-TEMP", temp, ""),
-                        ("DATE-OBS", date, ""), ("NCOMBINE", 20, ""), ("INSTRUME", "Canon EOS 6D", "")])
+    name = "M_%s_%d_%s_%s_%s_%s.fits" % (kind, iso, exposure, temp, date.replace(":", ""), fnumber)
+    cards = [("ISOSPEED", iso, ""), ("EXPTIME", float(exposure), ""), ("CCD-TEMP", temp, ""),
+             ("DATE-OBS", date, ""), ("NCOMBINE", 20, ""), ("INSTRUME", "Canon EOS 6D", "")]
+    cards += [(k, float(v), "") for k, v in (("FNUMBER", fnumber), ("FOCALLEN", focal)) if v]
+    imaging.write_fits(os.path.join(lib.folder(kind), name), np.zeros(shape, np.float32), cards)
     return name
 
 
@@ -300,6 +315,21 @@ class TestBibliothek(unittest.TestCase):
         self.lib.delete("bias/" + self.b_old)
         self.assertEqual(len(self.lib.list()), 5)
 
+    def test_flat_nach_optik_dark_flat_nach_iso_und_zeit(self):
+        w = write_master
+        f4 = w(self.lib, "flat", 400, 0.02, 15.0, "2026-11-12T22:00:00", fnumber=4.0, focal=24.0)
+        f4_old = w(self.lib, "flat", 400, 0.02, 15.0, "2026-11-01T22:00:00", fnumber=4.0, focal=24.0)
+        f28 = w(self.lib, "flat", 400, 0.01, 15.0, "2026-11-13T22:00:00", fnumber=2.8, focal=24.0)
+        df = w(self.lib, "darkflat", 400, 0.02, 15.0, "2026-11-12T22:10:00")
+        optics = {"fnumber": 4.0, "focal": 24.0, "lens": None}
+        self.assertEqual(self.lib.best("flat", 3200, 30, optics=optics)["name"], f4)         # ISO egal, neuester
+        self.assertNotEqual(self.lib.best("flat", optics=optics)["name"], f4_old)
+        self.assertEqual(self.lib.best("flat", optics=dict(optics, fnumber=2.8))["name"], f28)
+        self.assertIsNone(self.lib.best("flat", optics=dict(optics, fnumber=8.0)))            # keine passende Blende
+        self.assertEqual(self.lib.best("darkflat", 400, 0.023)["name"], df)                  # Av schwankt: ±25 %
+        self.assertIsNone(self.lib.best("darkflat", 400, 0.05))
+        self.assertIsNone(self.lib.best("darkflat", 800, 0.02))
+
     @unittest.skipUnless(HAS_RAWPY, "braucht rawpy (venv)")
     def test_zu_kurze_darks_sind_bias(self):
         meta = {"exposure": 1 / 4000, "iso": 3200, "temp": 24.0, "time": None, "model": "Canon EOS 6D"}
@@ -318,13 +348,16 @@ class TestMasterUndStack(unittest.TestCase):
         cls.dir = tempfile.mkdtemp(prefix="6d-ls-test-")
         cls.sensor, cls.stars = sim.Sensor(), sim.make_stars()
 
-    def shot(self, name, seconds, temp, cap, sky_seconds=0.0, iso=1600, cosmic=False):
-        stars = [] if cap else sim.sky_stars(self.stars, sky_seconds)
-        px = self.sensor.frame(seconds, iso, temp, sky=None if cap else (4, 9, 6.3), stars=stars, sigma=1.2)
+    def shot(self, name, seconds, temp, cap, sky_seconds=0.0, iso=1600, cosmic=False, panel=None, fnumber=2.8):
+        dark = cap or panel is not None
+        stars = [] if dark else sim.sky_stars(self.stars, sky_seconds)
+        px = self.sensor.frame(seconds, iso, temp, sky=None if dark else (4, 9, 6.3), stars=stars, sigma=1.2,
+                               panel=None if panel is None else tuple(panel * c for c in sim.PANEL_COLOR))
         if cosmic:
             px[500 * sim.RAW_W + 700] = sim.RAW_WHITE                   # Treffer kosmischer Strahlung
         t = datetime.datetime(2026, 11, 18, 23, 0) + datetime.timedelta(seconds=sky_seconds)
-        meta = {"exposure": seconds, "iso": iso, "temp": temp, "time": t.strftime("%Y:%m:%d %H:%M:%S")}
+        meta = {"exposure": seconds, "iso": iso, "temp": temp, "time": t.strftime("%Y:%m:%d %H:%M:%S"),
+                "fnumber": fnumber, "focal": 24.0, "lens": "Simulator 24mm"}
         path = os.path.join(self.dir, name)
         with open(path, "wb") as f:
             f.write(sim.dng_bytes(px, meta))
@@ -351,7 +384,6 @@ class TestMasterUndStack(unittest.TestCase):
         for _ in range(300):
             if ls.status()["done"]:
                 break
-            import time
             time.sleep(0.1)
         st = ls.status()
         self.assertEqual((st["frames"], st["rejected"], st["kind"]), (3, 0, "raw"), st["history"])
@@ -365,6 +397,51 @@ class TestMasterUndStack(unittest.TestCase):
         titles = [i["title"] for i in st["analysis"]["items"]]      # Analyse läuft am Ende von selbst
         self.assertIn("Darks 6 °C wärmer als die Lights", titles)
         self.assertTrue(any(t.startswith("Hintergrund unten") for t in titles), titles)   # Lichtverschmutzung
+        self.assertTrue(any(t.startswith("Ecken") and "Vignettierung" in t for t in titles), titles)   # ohne Flat
+
+    def run_stack(self, lib, opts, n=3, fnumber=2.8, tag="L"):
+        ls = livestack.LiveStack(lib, os.path.join(self.dir, "live-" + tag), opts, log=lambda *a: None)
+        for i in range(n):
+            ls.add(self.shot("%s%d.CR2" % (tag, i), 30, 12.0, False, sky_seconds=i * 300, fnumber=fnumber))
+        ls.finish()
+        for _ in range(400):
+            if ls.status()["done"]:
+                break
+            time.sleep(0.1)
+        return ls.status()
+
+    def test_flat_master_mit_dark_flat_und_korrektur(self):
+        lib = calib.Library(os.path.join(self.dir, "Bibliothek-Flat"))
+        darkflats = [self.shot("DF%d.CR2" % i, 0.01, 15.0, True, iso=400) for i in range(4)]
+        df = calib.build_master(lib, "darkflat", calib.group_frames(darkflats)[0][2], log=lambda *a: None)
+        self.assertTrue(df["name"].startswith("MASTER-DARKFLAT_ISO400_"))
+        levels = (5000, 5800, 4600, 5400)                             # Av: jedes Flat etwas anders hell
+        flats = [self.shot("F%d.CR2" % i, 0.011, 15.0, False, iso=400, panel=lv) for i, lv in enumerate(levels)]
+        flat = calib.build_master(lib, "flat", calib.group_frames(flats, by_exposure=False)[0][2],
+                                  log=lambda *a: None, source="Sitzung")
+        self.assertEqual(flat["flatcal"], df["name"])                 # Dark-Flat statt Bias abgezogen
+        self.assertEqual((flat["fnumber"], flat["focal"], flat["lens"]), (2.8, 24.0, "Simulator 24mm"))
+        self.assertTrue(flat["name"].startswith("MASTER-FLAT_24mm_f2.8_ISO400_n4_"), flat["name"])
+        self.assertAlmostEqual(flat["level"], 5000 / (sim.RAW_WHITE - sim.RAW_BLACK), delta=0.03)
+        self.assertGreater(flat["vignette"], 0.15)                    # Simulator: Ecken bis −30 %
+        norm = livestack.normalize_flat(imaging.read_fits(lib.path(flat["id"]))[0])
+        h, w = norm.shape
+        self.assertAlmostEqual(float(np.median(norm[h // 2 - 50:h // 2 + 50, w // 2 - 50:w // 2 + 50])), 1.0,
+                               delta=0.02)
+        for i in (0, 1):                                              # je Farbkanal normiert (Farbe bleibt)
+            for j in (0, 1):
+                ch = norm[h // 2 - 40 + i:h // 2 + 40:2, w // 2 - 40 + j:w // 2 + 40:2]
+                self.assertAlmostEqual(float(np.median(ch)), 1.0, delta=0.03)
+        dy, dx = int(sim.DUST[1] * sim.RAW_H), int(sim.DUST[0] * sim.RAW_W)
+        self.assertLess(float(np.median(norm[dy - 3:dy + 3, dx + 13:dx + 15])), 0.95)    # Staubring im Flat
+
+        with_flat = self.run_stack(lib, {"satellites": False, "dark": "none"}, tag="LF")
+        self.assertEqual(with_flat["calib"]["flat"], flat["name"])
+        items = {i["title"]: i for i in with_flat["analysis"]["items"]}
+        ok = [t for t in items if t.startswith("Flat gleicht die Vignettierung aus")]
+        self.assertTrue(ok, list(items))
+        other = self.run_stack(lib, {"satellites": False, "dark": "none"}, n=2, fnumber=4.0, tag="L4")
+        self.assertIsNone(other["calib"]["flat"])                     # f/4: der f/2.8-Flat passt nicht
 
 
 if __name__ == "__main__":

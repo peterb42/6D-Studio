@@ -6,7 +6,8 @@ des Sternenhimmels:
 - Bulb Start/Stopp mit Timer, ISO/Blende/Zeit, automatischer Download
 - Serien für Stacking (Lights, Darks, Bias, Flats, Dark-Flats) mit Siril-gerechter Ablage
 - **Live-Stack** mit Dark-Optimierung, Ausrichtung auch bei Bildfelddrehung und **Bildanalyse** mit Empfehlungen
-- **Dark-/Bias-Bibliothek** mit geführter Aufnahme und automatischer Auswahl passender Masters
+- **Kalibrier-Bibliothek** (Bias, Darks, Flats, Dark-Flats) mit geführter Aufnahme und automatischer Auswahl
+  passender Masters
 
 ```
  Browser ──HTTP :8066──┐
@@ -30,7 +31,8 @@ Befehle: `6d-fernsteuerung` ohne Argument (siehe [Kommandozeile](#kommandozeile)
 
 **Typische Nacht:** Livebild an → Stern anklicken, Doppelklick (Lupe 10×), scharfstellen → Objektiv auf MF →
 Live-Stack starten → Light-Serie starten → zwischendurch auf „Live-Stack“ schauen, Bildanalyse lesen → direkt
-danach Darks über „Geführt aufnehmen …“ (gleiche Temperatur) → Bias gern später zu Hause. Ausführlich:
+danach Darks über „Geführt aufnehmen …“ (gleiche Temperatur) → vor dem Abbauen Flats (Fokus und Blende nicht
+anfassen) → Bias gern später zu Hause. Ausführlich:
 [docs/stacking-und-kalibrierung.md](docs/stacking-und-kalibrierung.md).
 
 ## Funktionen im Einzelnen
@@ -116,8 +118,8 @@ Nimmt eine Folge gleichartiger Bilder auf und legt sie Siril-gerecht ab.
 | Light | B (Zeit im Studio) oder M | wie eingestellt |
 | Dark | wie die Lights, Deckel drauf, Sucher abdecken | wie die Lights |
 | Bias | M | Studio stellt die kürzeste Zeit (1/4000) ein |
-| Flat | Av | Kamera bestimmt die Zeit; Fokus und Blende wie bei den Lights |
-| Dark-Flat | M | Zeit der Flats, Deckel drauf |
+| Flat | Av | Kamera bestimmt die Zeit; Fokus und Blende wie bei den Lights. Das Studio misst die Helligkeit jedes Flats und meldet beim ersten „gut“ oder „zu dunkel: +1…+2 EV“ (ideal 30–60 %). |
+| Dark-Flat | M | Studio stellt ISO und Zeit der letzten Flats ein; Deckel drauf |
 
 **Ablage:** `~/Pictures/6D-Tethering/Astro/<Nacht>_<Objekt>/{lights,darks,biases,flats,darkflats}/` – die
 „Nacht“ wechselt mittags, Bilder nach Mitternacht landen also im Ordner des Abends. Dateinamen:
@@ -136,24 +138,27 @@ Angelehnt an **OpenLiveStacker** und **Siril**. Braucht numpy und rawpy (siehe [
 | Element | Funktion |
 |---|---|
 | **Bias**, **Dark** | Automatisch (passend zu den Lights aus der Bibliothek), Keins, oder ein bestimmter Master. |
+| **Flat** | Automatisch (gleiche Blende, Brennweite und Objektiv wie die Lights), Keins, oder ein bestimmter Master-Flat. Gleicht Vignettierung und Staubschatten aus. |
 | **Dark-Optimierung** | Skaliert das Wärmesignal des Darks mit dem Faktor k (0–4), der das Rauschen am kleinsten macht – gleicht Temperatur- und Zeitunterschiede aus (Siril `-opt`). |
 | **Hotpixel-Filter je Bild** | Entfernt einzelne helle Pixel, die die Hotpixel-Karte nicht kennt, und Treffer kosmischer Strahlung. |
 | **Satelliten und Flugzeuge entfernen** | Verwirft je Pixel den hellsten Wert (ab 3 Bildern). |
 | **Live-Stack starten** / **Beenden & speichern** / **Neu beginnen** | Neu beginnen leert den Stapel; das nächste Bild wird die neue Referenz. |
 | Statuszeile | Bilder, Gesamtbelichtung, verworfene Bilder, RAW/JPEG; was gerade gerechnet wird. |
-| Kalibrierzeile | Verwendeter Bias und Dark, Anzahl Hotpixel, aktuelles k, Temperatur der Lights. |
+| Kalibrierzeile | Verwendeter Bias, Dark und Flat (oder „keiner für 24 mm · f/4“), Anzahl Hotpixel, aktuelles k, Temperatur der Lights. |
 | Tabelle | Die letzten 8 Bilder: Sterne (zugeordnet/gefunden), k, FWHM, Drehung, Restfehler der Ausrichtung (±px); verworfene mit Grund. |
 | **Nachstacken** | Stapelt die Lights einer vorhandenen Sitzung – auch ohne Kamera, z. B. mit neuen Darks. |
 
 **Je RAW:**
 1. Bias abziehen; ohne Master-Bias den Schwarzwert der Kamera.
 2. Dark mal k abziehen.
-3. Hotpixel aus der Hotpixel-Karte des Darks durch gleichfarbige Nachbarn ersetzen.
-4. Superpixel-Debayer (halbe Auflösung, 2748 × 1835).
-5. Bis zu 100 Sterne finden und per Dreiecksvergleich zuordnen.
-6. **Homographie** über alle Sterne berechnen: Ein Weitwinkel bildet die Bildfelddrehung vom Stativ projektiv ab.
+3. Durch den Master-Flat teilen. Er ist je Farbkanal auf 1 normiert, damit die Farben bleiben, auch bei farbiger
+   Lichtquelle.
+4. Hotpixel aus der Hotpixel-Karte des Darks durch gleichfarbige Nachbarn ersetzen.
+5. Superpixel-Debayer (halbe Auflösung, 2748 × 1835).
+6. Bis zu 100 Sterne finden und per Dreiecksvergleich zuordnen.
+7. **Homographie** über alle Sterne berechnen: Ein Weitwinkel bildet die Bildfelddrehung vom Stativ projektiv ab.
    An der 6D mit 24 mm liegen die Sterne damit am Rand 0,2 px genau statt 7 px daneben.
-7. Verzerren und mitteln.
+8. Verzerren und mitteln.
 
 JPEGs werden nur ausgerichtet und gemittelt (nicht linear, keine Kalibrierung). Bilder mit weniger als 6
 zugeordneten Sternen werden verworfen (Wolken, Verwackeln).
@@ -175,36 +180,54 @@ Prüft den Stapel alle 10 Bilder, am Ende und per **Bild prüfen**. Jeder Befund
 | Dark – Rauschgrenze | ab wie vielen Bildern das Rauschen des Masters den Stapel begrenzt | mehr Darks – die Grenze wächst mit ihrer Anzahl |
 | Rauschgewinn | Rauschen im Stapel gegen Einzelbild/√N | festes Muster („Walking Noise“): passende Kalibrierung, Dithering |
 | Hintergrund | Vignettierung, Gradient, helle Bereiche, Überbelichtung | Flats; Lichtquelle oder Wolke |
+| Flat | was mit Master-Flat an Vignettierung übrig bleibt; Helligkeit der Flats | Ecken noch dunkler: Blende/Fokus anders als bei den Lights; Ecken heller: Offset fehlt → Bias/Dark-Flats, Master-Flat neu; Flats zu dunkel: +1…+2 EV |
 | Sterne | Breite und Form in Mitte und Rand, Stapel gegen Einzelbild, Restfehler der Ausrichtung | Abblenden (Koma), Stativ, Wind |
-| Bilder | verworfene, Bilder mit Wolken/Streulicht, Temperaturverlauf | Bilder aussortieren |
+| Bilder | verworfene, Bilder mit Wolken/Streulicht, Temperaturverlauf; viele verworfene Bilder mit genug Sternen = anderer Bildausschnitt | Bilder aussortieren; nach neuem Ausrichten „Neu beginnen“ |
 
-### Dark- & Bias-Bibliothek
+### Kalibrier-Bibliothek
 
-Masters (gemittelte Kalibrierbilder) als FITS in `Astro/Bibliothek/{bias,darks}/`, z. B.
-`MASTER-DARK_ISO3200_30s_18C_n20_20261118-2314.fits`. Die Tabelle zeigt Typ, ISO, Zeit, Temperatur, Anzahl und
-Datum; **✓** markiert, was zu den letzten Lights passt, **✕** löscht einen Master.
+Masters (gemittelte Kalibrierbilder) als FITS in `Astro/Bibliothek/{bias,darks,flats,darkflats}/`, z. B.
+`MASTER-DARK_ISO3200_30s_18C_n20_20261118-2314.fits` oder `MASTER-FLAT_24mm_f4_ISO400_n25_20261119-0130.fits`.
+Die Tabelle zeigt Typ, ISO, Zeit (bei Flats Brennweite und Blende), Temperatur, Anzahl und Datum; der Tooltip
+zeigt bei Flats Helligkeit, Lichtabfall zur Ecke und was abgezogen wurde. **✓** markiert, was zu den letzten Lights
+passt (Dark-Flats: zu den letzten Flats), **✕** löscht einen Master.
 
-**Automatische Auswahl** (Live-Stack „Automatisch“): Bias mit gleicher ISO, der neueste. Dark mit gleicher ISO,
-zuerst gleiche Zeit (±5 %), dann nächste Temperatur, dann der neueste; mit Dark-Optimierung auch Darks mit der
-0,5- bis 4-fachen Zeit. Kamera und Bildgröße müssen passen.
+**Automatische Auswahl** (Live-Stack „Automatisch“), Kamera und Bildgröße müssen passen:
+- **Bias:** gleiche ISO, der neueste.
+- **Dark:** gleiche ISO; zuerst gleiche Zeit (±5 %), dann nächste Temperatur, dann der neueste. Mit
+  Dark-Optimierung auch Darks mit der 0,5- bis 4-fachen Zeit.
+- **Flat:** gleiche Optik – Blende, Brennweite und Objektiv aus dem EXIF müssen passen, soweit bekannt (manuelle
+  Objektive melden keine Blende); dann der neueste. ISO und Zeit sind egal.
+- **Dark-Flat** (für den Master-Flat): ISO der Flats, Zeit ±25 %.
+
+**Master-Flat:** Von jedem Flat zieht das Studio den Master-Dark-Flat ab (sonst den Master-Bias gleicher ISO,
+sonst den Schwarzwert). Dann bringt es jedes Flat auf die Helligkeit des ersten, denn in Av schwankt die Zeit.
+Danach folgt dasselbe κσ-Mittel wie bei den anderen Masters. Kommen Dark-Flats erst nach den Flats, baut es den
+Master-Flat dieser Sitzung danach von selbst neu und ersetzt den alten.
 
 **Geführt aufnehmen …**
 
-1. **Was?** Bias oder Darks – mit Erklärung, wann und wie viele.
+1. **Was?** Bias, Darks, Flats oder Dark-Flats – mit Erklärung, wann und wie viele.
 2. **Kamera vorbereiten.** Automatisch geprüft:
-   - Moduswahlrad (Bias: M, Darks: B oder M);
-   - ISO wie die letzten Lights;
-   - Zeit wie die Lights. **Darks unter 1 s sperrt der Assistent** – das wären nur Bias, typisch nach einer
-     Bias-Serie mit 1/4000.
+   - **Bias:** Moduswahlrad M und ISO wie die Lights.
+   - **Darks:** Moduswahlrad B oder M, ISO und Zeit wie die Lights. **Darks unter 1 s sperrt der Assistent** –
+     das wären nur Bias, typisch nach einer Bias-Serie mit 1/4000.
+   - **Flats:** Moduswahlrad Av (oder M), Blende wie die Lights, ISO bis 800, Helligkeit des ersten Flats.
+   - **Dark-Flats:** Moduswahlrad M; ISO und Zeit der Flats stellt das Studio selbst ein. Bei Flats unter 1 s
+     reicht meist der Master-Bias.
 
-   Zum Abhaken: Objektivdeckel drauf, Sucher abgedeckt, Rauschreduzierung bei Langzeitbelichtung aus, RAW.
-3. **Aufnehmen:** Anzahl (Bias 40, Darks 20) und im Modus B die Zeit (vorbelegt mit der Zeit der Lights), mit
-   Dauer und Download-Zeit (~25 s je RAW über den Hotspot).
+   Zum Abhaken je Typ, z. B. Objektivdeckel drauf, Sucher abgedeckt, Rauschreduzierung bei Langzeitbelichtung
+   aus, RAW. Bei Flats: gleichmäßige Lichtquelle (weißes T-Shirt + Tablet oder Dämmerungshimmel),
+   Fokus/Blende/Brennweite unverändert, Belichtungskorrektur +1 EV.
+3. **Aufnehmen:** Anzahl (Bias 40, Darks 20, Flats und Dark-Flats 25) und im Modus B die Zeit (vorbelegt mit der
+   Zeit der Lights), mit Dauer und Download-Zeit (~25 s je RAW über den Hotspot).
 4. **Master erstellen** startet von selbst, sobald alle RAWs auf dem Mac sind. Das Verfahren: κσ-Clipping in zwei
    Durchgängen, verwirft Ausreißer wie kosmische Treffer auch bei wenigen Bildern (ab 3).
 
-**Aus Ordner:** baut Masters aus Darks/Bias, die schon in einem Sitzungsordner liegen (z. B. von der Karte
-kopiert) – gruppiert nach ISO und Zeit, je Gruppe ab 3 Bildern.
+**Aus Ordner:** Baut Masters aus Kalibrierbildern, die schon in einem Sitzungsordner liegen (z. B. von der Karte
+kopiert). Gruppiert wird nach ISO und Zeit (Flats nur nach ISO), je Gruppe ab 3 Bildern. Für Flats entsteht
+vorher der Master-Dark-Flat, wenn die Sitzung Dark-Flats enthält. Derselbe Ordner noch einmal ersetzt den alten
+Master.
 
 ### Letztes Foto
 
@@ -259,6 +282,14 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 ## Änderungen
 
 **19.11.2026**
+- **Flats und Dark-Flats** in Live-Stack und Bibliothek:
+  - Master-Flat mit Abzug von Dark-Flat oder Bias und Helligkeitsausgleich;
+  - automatische Auswahl nach Optik (Blende, Brennweite, Objektiv aus dem EXIF);
+  - Division je Farbkanal normiert;
+  - geführte Aufnahme mit Rückmeldung zur Flat-Helligkeit;
+  - Dark-Flats mit von selbst gestellter ISO und Zeit, danach Neubau des Master-Flats;
+  - Bildanalyse prüft, ob der Flat passt.
+- Gleiche Bilder noch einmal als Master gebaut ersetzen den alten Master.
 - **Bildanalyse** im Live-Stack mit Empfehlungen für Darks, Bias und Flats (`studio/analysis.py`).
 - Ausrichtung per **Homographie** – keine Doppelsterne mehr am Rand bei Weitwinkel.
 - **Hintergrund ebnen** in der Stack-Anzeige – keine schwarz abgeschnittenen Ecken mehr.
@@ -281,7 +312,9 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 ## Grenzen und offene Punkte
 
 - **Fokusantrieb:** an der echten 6D noch nicht ausprobiert – Richtung und Schrittgrößen sind angenommen.
-- **Flats und Dark-Flats:** Serien gibt es, aber nicht im Live-Stack und nicht in der Bibliothek.
+- **Flats an der echten 6D:** Master-Flat, Auswahl nach Optik und Korrektur sind mit dem Simulator getestet,
+  noch nicht mit einer echten Lichtquelle. Ob die 6D im Modus Av bei Fernauslösung die Belichtungskorrektur
+  übernimmt, ist offen.
 - **Live-Stack:** Der Live-Stack mittelt nur (außer „Satelliten entfernen“) – für das Endbild die RAWs in Siril
   stapeln. Der Vordergrund verschmiert, weil auf die Sterne ausgerichtet wird.
 - **Uhrzeit:** Datum und Uhrzeit der Masters kommen aus der Kamera – ihre Uhr sollte stimmen.
@@ -295,7 +328,7 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 | `studio/astro.py` | Serien für Stacking: Bildtypen, Namenskonvention, `serie.csv` |
 | `studio/livestack.py` | Live-Stack: Kalibrierung mit Dark-Optimierung, Sterne finden, Ausrichten (Dreiecke + Homographie), Mitteln, Anzeige |
 | `studio/analysis.py` | Bildanalyse des Stapels: Kalibrierung, Rauschgewinn, Hintergrund, Sterne – mit Empfehlungen |
-| `studio/calib.py` | Dark-/Bias-Bibliothek: Masters als FITS, automatische Auswahl, Master aus RAWs (κσ-Clipping) |
+| `studio/calib.py` | Kalibrier-Bibliothek: Master-Bias, -Darks, -Flats, -Dark-Flats als FITS, automatische Auswahl (auch nach Optik), Master aus RAWs (κσ-Clipping) |
 | `studio/imaging.py` | RAW (rawpy), JPEG, FITS, PNG; EXIF inkl. Sensortemperatur der 6D |
 | `bin/6d-fernsteuerung` | Kommandozeilen-Werkzeug (zsh) – startet/stoppt das Studio, gphoto2-Befehle |
 | `sim/sim6d.py` | **Simulierte 6D** – PTP/IP wie die echte Kamera, Sternenhimmel-Livebild, Bulb, Download, RAWs |
@@ -354,10 +387,13 @@ Für Live-Stack und Bibliothek: `6d-fernsteuerung sim --raw --sky-speed 60 --foc
 ein RAW mit echten Sensordaten:
 - Offset und Rauschen,
 - Hotpixel abhängig von Temperatur und ISO,
-- Sterne, die sich 60× schneller um den Pol drehen.
+- Vignettierung (Ecken −30 %) und der Schatten eines Staubkorns,
+- Sterne, die sich 60× schneller um den Pol drehen,
+- Blende, Brennweite und Objektiv im EXIF.
 
 Für Darks und Bias: `6d-fernsteuerung sim-cmd cap on` (Objektivdeckel), `sim-cmd temp 20` (Umgebungstemperatur),
-`sim-cmd mode M`.
+`sim-cmd mode M`. Für Flats: `sim-cmd mode Av` und `sim-cmd panel on` (Leuchtfläche vor dem Objektiv; Av belichtet
+sie auf 40 %).
 
 In VS Code mit Haltepunkten in beiden: Startkonfiguration **„Simulator + Studio (Debug)“**. Im Terminal des
 Simulators lässt er sich steuern: `mode M`, `drop` (WLAN-Abbruch), `freeze`/`wake`, `focus 0`, `status`.

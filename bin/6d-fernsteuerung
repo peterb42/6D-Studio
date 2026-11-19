@@ -137,7 +137,7 @@ Aufruf: $SELF <befehl> [argumente]      Verbindung: $MODE${CAM_IP:+ ($CAM_IP)}
   stop               6D Studio / Vermittler beenden
   sim [optionen]     Simulierte 6D + Studio auf http://127.0.0.1:8067 (zum Entwickeln ohne Kamera)
                      z. B. sim --raw --sky-speed 60  (RAW+JPEG, Himmel dreht sich 60× schneller)
-  sim-cmd <befehl>   Befehl an den Simulator, z. B. sim-cmd cap on | temp 20 | mode M | status
+  sim-cmd <befehl>   Befehl an den Simulator, z. B. sim-cmd cap on | temp 20 | mode Av | panel on | status
   sim-stop           Simulator beenden
   usb                Zurück auf USB-Kabel (beendet den Vermittler)
   status             Zustand der WLAN-Verbindung anzeigen
