@@ -270,6 +270,9 @@ class TestStudioMitSimulator(unittest.TestCase):
             self.assertEqual(info["calib"]["dark"], dark["name"])      # automatisch gewählt
             self.assertTrue(all("k" in h for h in info["history"]))
             self.assertEqual(st.last_light["iso"], 3200)
+            st.act_live_analyze({})                                     # „Bild prüfen“
+            self.assertTrue(wait_for(lambda: live.status()["analysis"] is not None, 20))
+            self.assertTrue(any(i["topic"] == "Dark" for i in live.status()["analysis"]["items"]))
             st.act_live_stop({})
             self.assertTrue(wait_for(lambda: live.status()["done"], 20))
             self.assertTrue(live.saved and os.path.isfile(live.saved[0]))

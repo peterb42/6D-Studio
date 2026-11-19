@@ -94,6 +94,15 @@ table.mini th{color:var(--muted);font-weight:600;text-align:left;padding:3px 4px
 table.mini td{padding:4px;border-bottom:1px solid var(--line);vertical-align:top}
 table.mini tr.match td{color:#fff;background:#13241a}
 table.mini td.why{color:var(--muted)}
+.anahead{display:flex;align-items:center;gap:8px;margin-top:14px;padding-top:10px;border-top:1px solid var(--line)}
+.anahead .hint{flex:1;margin:0}
+.ana .it{display:grid;grid-template-columns:16px 1fr;gap:0 6px;margin:8px 0;font-size:13px}
+.ana .ic{font-weight:700;text-align:center}
+.ana .ic.info{color:var(--accent)}
+.ana .x{color:var(--muted);font-size:12px;margin-top:1px}
+.ana .adv{font-size:12px;margin-top:2px}
+.under .check{margin:0;align-items:center}
+.under .check input{margin-top:0}
 .ok{color:var(--ok)} .bad{color:var(--err)} .warn{color:var(--warn)}
 .x{background:none;border:0;color:var(--muted);cursor:pointer;padding:0 4px}
 .x:hover{color:var(--err)}
@@ -171,6 +180,8 @@ body.night #red{display:block}
         <span class="lbl">Helligkeit</span><input type="range" id="stStretch" min="0.05" max="0.5" step="0.01" value="0.25">
         <span class="lbl">Schwarzpunkt</span><input type="range" id="stBlack" min="-6" max="0" step="0.1" value="-2.8">
         <button class="btn" id="stDefault" title="Automatische Streckung wie Siril">Auto</button>
+        <label class="check" title="Gradient und Vignettierung für die Anzeige ausgleichen – sonst schneidet die Streckung dunkle Ecken schwarz ab">
+          <input type="checkbox" id="stFlat" checked> Hintergrund ebnen</label>
       </div>
       <div class="group">
         <button class="btn" id="stSave">Speichern</button><button class="btn" id="stOpen" title="Gespeichertes PNG öffnen">Öffnen</button>
@@ -199,8 +210,9 @@ body.night #red{display:block}
       </div>
     </div>
     <div class="note" id="lvNote">
-      Scharfstellen: Livebild an, hellen Stern per Klick als Ziel wählen (oder in die Bildmitte schwenken), Lupe 10×, dann
-      fokussieren, bis der Stern-Ø am kleinsten ist. Doppelklick ins Bild = 10× an dieser Stelle.
+      Scharfstellen: Livebild an, hellen Stern anklicken (gelber Kreis = Ziel), Doppelklick = Lupe 10× an dieser Stelle,
+      dann fokussieren, bis der Stern-Ø am kleinsten ist. Das grüne Quadrat zeigt den gemessenen Stern – ohne Ziel
+      den hellsten im ganzen Bild (springt bei ähnlich hellen Sternen), mit Ziel bleibt es dort.
       Fokusantrieb nur mit AF-Objektiv (Schalter auf AF) – bei MF-Objektiven am Ring drehen.
       Tasten: <kbd>L</kbd> Livebild · <kbd>1</kbd> <kbd>5</kbd> <kbd>0</kbd> Lupe · Pfeile Ausschnitt ·
       <kbd>,</kbd> <kbd>.</kbd> Fokus fein · <kbd>V</kbd> Kamera/Live-Stack · <kbd>N</kbd> Nachtmodus
@@ -285,7 +297,7 @@ body.night #red{display:block}
       <div class="hint" id="lSub"></div>
       <div class="field"><label for="lBias">Bias</label><select id="lBias"></select></div>
       <div class="field"><label for="lDark">Dark</label><select id="lDark"></select></div>
-      <label class="toggle" title="Siril: Faktor k ∈ [0, 2], kleinste Streuung im 512×512-Feld der Bildmitte">
+      <label class="toggle" title="Wie Siril: Faktor k ∈ [0, 4] mit der kleinsten Streuung im 512×512-Feld der Bildmitte (ohne die Hotpixel, die danach ohnehin ersetzt werden)">
         <input type="checkbox" id="lOpt" checked> Dark-Optimierung (gleicht Temperatur aus)</label>
       <label class="toggle"><input type="checkbox" id="lHot" checked> Hotpixel-Filter je Bild</label>
       <label class="toggle" title="Verwirft je Pixel den hellsten Wert (ab 3 Bildern) – wie bei OpenLiveStacker">
@@ -297,6 +309,9 @@ body.night #red{display:block}
         <button class="btn" id="lReset" hidden title="Stapel leeren – das nächste Bild wird die neue Referenz">Neu beginnen</button>
       </div>
       <div id="lHist"></div>
+      <div class="anahead"><b>Bildanalyse</b><span class="hint" id="lAnaHead"></span>
+        <button class="btn" id="lAnalyze" title="Stapelbild und Kalibrierung prüfen – läuft auch automatisch alle 10 Bilder und am Ende">Bild prüfen</button></div>
+      <div class="ana" id="lAna"></div>
       <div class="field" style="margin-top:12px"><label for="lSession">Nachstacken</label>
         <span class="inline"><select id="lSession"></select><button class="btn" id="lFolder">Einlesen</button></span></div>
       <div class="note">Jedes Light, das auf den Mac kommt (Serie oder Bulb), wird eingerechnet. RAWs werden mit Bias und
@@ -388,7 +403,8 @@ function fmt(sec) {
 }
 
 let S = null, seq = 0, lvUrl = null, target = null, clockOffset = 0, lastBulb = null;
-let view = store.get('view', 'lv'), stackSeq = -1, stackUrl = null, stackBusy = false;   // Live-Stack-Anzeige
+// Anzeige: beim Start immer das Kamerabild (zum Einrichten) – den Live-Stack nur auf Klick bzw. Taste V
+let view = 'lv', stackSeq = -1, stackUrl = null, stackBusy = false;
 let LIB = null, libSeq = -1;                                                           // Bibliothek
 
 // ---------------------------------------------------------------- Server
@@ -640,7 +656,6 @@ const shortName = n => n.length > 26 ? '…' + n.slice(-24) : n;
 
 function setView(v) {
   view = v;
-  store.set('view', v);
   $$('.view').forEach(b => b.classList.toggle('on', b.dataset.v === v));
   const st = v === 'stack';
   $('#lv').hidden = st; $('#stackImg').hidden = !st;
@@ -700,38 +715,61 @@ function renderLive() {
 
   const tag = $('#stacktag');
   tag.hidden = !(view === 'stack' && L && L.frames);
+  $('.view[data-v="stack"]').textContent = L && L.frames ? `Live-Stack · ${L.frames}` : 'Live-Stack';
   if (!L) {
     $('#lLine').textContent = 'aus';
     $('#lSub').textContent = 'Start legt einen neuen Stapel an. Darks und Bias wählt das Studio beim ersten RAW aus der Bibliothek.';
     $('#lCalib').textContent = '';
     $('#lHist').innerHTML = '';
     $('#stInfo').textContent = '';
+    renderAnalysis(null);
     return;
   }
   if (view === 'stack' && L.seq !== stackSeq) loadStack();
   $('#lLine').textContent = `${L.frames} Bild${L.frames === 1 ? '' : 'er'} · ${fmt(L.exposure)} Belichtung`
     + (L.rejected ? ` · ${L.rejected} verworfen` : '') + (L.kind ? ` · ${L.kind.toUpperCase()}` : '');
-  $('#lSub').textContent = L.busy ? `rechnet ${L.busy} …${L.queue ? ` (+${L.queue} wartend)` : ''}`
+  $('#lSub').textContent = (L.busy ? `rechnet ${L.busy} …${L.queue ? ` (+${L.queue} wartend)` : ''}`
     : L.queue ? `${L.queue} Bilder warten`
     : running ? 'wartet auf das nächste Light'
-    : L.done ? `beendet · ${L.out}` : 'speichert …';
+    : L.done ? `beendet · ${L.out}` : 'speichert …')
+    + (view !== 'stack' && L.frames ? ' · ansehen: oben „Live-Stack“ (Taste V)' : '');
   const c = L.calib || {}, last = L.history.find(h => h.ok);
   $('#lCalib').textContent = L.kind === 'jpeg' ? 'JPEGs: ohne Kalibrierung (nicht linear) – nur ausrichten und mitteln.'
     : !c.hasOwnProperty('dark') ? 'Kalibrierung wird beim ersten RAW gewählt.'
     : `Bias: ${c.bias || 'Schwarzwert ' + c.offset} · Dark: ${c.dark ? `${c.dark}` : 'keins'}`
       + (c.dark ? ` · ${c.hot} Hotpixel` : '') + (last && last.k !== undefined ? ` · k = ${last.k}` : '')
       + (L.temp !== null && L.temp !== undefined ? ` · Lights ${fmtTemp(L.temp)}` : '');
-  $('#lHist').innerHTML = L.history.length ? `<table class="mini"><tr><th></th><th>Bild</th><th>Sterne</th><th>k</th><th>FWHM</th><th>Drehung</th></tr>`
+  $('#lHist').innerHTML = L.history.length ? `<table class="mini"><tr><th></th><th>Bild</th><th>Sterne</th><th>k</th><th>FWHM</th><th>Drehung</th><th title="Restfehler der Ausrichtung">±px</th></tr>`
     + L.history.slice(0, 8).map(h => h.ok
-      ? `<tr><td class="ok">✓</td><td title="${esc(h.name)}">${esc(shortName(h.name))}</td><td>${h.matched}/${h.stars}</td><td>${h.k ?? '–'}</td><td>${h.fwhm ?? '–'}</td><td>${h.rot.toFixed(2)}°</td></tr>`
-      : `<tr><td class="bad">✖</td><td title="${esc(h.name)}">${esc(shortName(h.name))}</td><td class="why" colspan="4">${esc(h.reason)}</td></tr>`).join('')
+      ? `<tr><td class="ok">✓</td><td title="${esc(h.name)}">${esc(shortName(h.name))}</td><td>${h.matched}/${h.stars}</td><td>${h.k ?? '–'}</td><td>${h.fwhm ?? '–'}</td><td>${h.rot.toFixed(2)}°</td><td>${h.rms ?? '–'}</td></tr>`
+      : `<tr><td class="bad">✖</td><td title="${esc(h.name)}">${esc(shortName(h.name))}</td><td class="why" colspan="5">${esc(h.reason)}</td></tr>`).join('')
     + '</table>' : '';
   tag.textContent = `Live-Stack · ${L.frames}× · ${fmt(L.exposure)}`;
   $('#stInfo').textContent = L.saved.length ? `gespeichert: ${L.saved[L.saved.length - 1]}` : '';
   $('#stOpen').disabled = !L.saved.length;
   if (document.activeElement !== $('#stStretch')) $('#stStretch').value = L.opts.stretch;
   if (document.activeElement !== $('#stBlack')) $('#stBlack').value = L.opts.black;
+  $('#stFlat').checked = L.opts.flatten !== false;
+  renderAnalysis(L);
 }
+const ANA_ICON = {ok: '✓', info: 'i', warn: '!', bad: '✗'};
+function renderAnalysis(L) {
+  const a = L && L.analysis;
+  $('#lAnalyze').disabled = !L || !L.frames || L.analyzing;
+  $('#lAnalyze').textContent = L && L.analyzing ? 'prüft …' : 'Bild prüfen';
+  if (!a) {
+    $('#lAnaHead').textContent = L && L.frames ? 'läuft automatisch alle 10 Bilder und am Ende' : '';
+    $('#lAna').innerHTML = '';
+    return;
+  }
+  const t = new Date(a.time * 1000).toLocaleTimeString('de-DE', {hour: '2-digit', minute: '2-digit'});
+  $('#lAnaHead').textContent = `${a.summary} · ${a.frames} Bilder · ${t}`;
+  $('#lAna').innerHTML = a.items.map(i => `<div class="it"><span class="ic ${i.level}">${ANA_ICON[i.level]}</span><div>`
+    + `<div>${esc(i.title)}</div>` + (i.text ? `<div class="x">${esc(i.text)}</div>` : '')
+    + (i.advice ? `<div class="adv">→ ${esc(i.advice)}</div>` : '') + '</div></div>').join('');
+}
+$('#lAnalyze').onclick = () => api('/api/live/analyze');
+$('#stFlat').onchange = e => api('/api/live/view', {flatten: e.target.checked});
 
 $$('.view').forEach(b => b.onclick = () => setView(b.dataset.v));
 $('#lBias').onchange = e => store.set('l.bias', e.target.value);
@@ -744,11 +782,11 @@ function liveBody() {
   return {bias: $('#lBias').value || 'auto', dark: $('#lDark').value || 'auto', optimize: $('#lOpt').checked,
           hotpixels: $('#lHot').checked, satellites: $('#lSat').checked, target: $('#sTarget').value.trim()};
 }
-$('#lStart').onclick = async () => { if (await api('/api/live/start', liveBody())) { stackSeq = -1; setView('stack'); } };
+$('#lStart').onclick = async () => { if (await api('/api/live/start', liveBody())) stackSeq = -1; };
 $('#lStop').onclick = () => api('/api/live/stop');
 $('#lReset').onclick = () => { if (confirm('Stapel leeren und neu beginnen?')) api('/api/live/reset'); };
 $('#lFolder').onclick = async () => {
-  if (await api('/api/live/folder', Object.assign(liveBody(), {session: $('#lSession').value}))) setView('stack');
+  if (await api('/api/live/folder', Object.assign(liveBody(), {session: $('#lSession').value}))) stackSeq = -1;
 };
 $('#stSave').onclick = () => api('/api/live/save');
 $('#stOpen').onclick = () => window.open('/api/live/saved.png?t=' + Date.now(), '_blank');
@@ -981,7 +1019,20 @@ function showFrame(url) {
 // Schärfe-Messung: Durchmesser des hellsten Sterns bei halber Helligkeit (kleiner = schärfer)
 const cv = document.createElement('canvas');
 const cx = cv.getContext('2d', {willReadFrequently: true});
-let hist = [], best = null;
+let hist = [], best = null, lastStar = null;
+function brightest(L, w, bg, x0, y0, x1, y1) {   // hellste 3×3-Summe im Fenster – ignoriert einzelne heiße Pixel
+  let s0 = -1, bi = 0;
+  for (let y = y0; y < y1; y++) {
+    const row = y * w;
+    for (let x = x0; x < x1; x++) {
+      const i = row + x;
+      if (L[i] < bg + 20) continue;
+      const s = L[i-w-1] + L[i-w] + L[i-w+1] + L[i-1] + L[i] + L[i+1] + L[i+w-1] + L[i+w] + L[i+w+1];
+      if (s > s0) { s0 = s; bi = i; }
+    }
+  }
+  return {s: s0, i: bi};
+}
 function analyze(img) {
   const w = img.naturalWidth, h = img.naturalHeight;
   if (!w || !h) return;
@@ -996,19 +1047,22 @@ function analyze(img) {
     L[p] = v;
     if ((p & 31) === 0) { sum += v; n++; }
   }
-  const bg = sum / n;
-  let bestS = -1, bi = 0;                       // 3×3-Summe: ignoriert einzelne heiße Pixel
-  for (let y = 1; y < h - 1; y++) {
-    const row = y * w;
-    for (let x = 1; x < w - 1; x++) {
-      const i = row + x;
-      if (L[i] < bg + 20) continue;
-      const s = L[i-w-1] + L[i-w] + L[i-w+1] + L[i-1] + L[i] + L[i+1] + L[i+w-1] + L[i+w] + L[i+w+1];
-      if (s > bestS) { bestS = s; bi = i; }
-    }
+  const bg = sum / n, zoom = S ? S.liveview.zoom : 1;
+  // Suchfenster: mit angeklicktem Ziel (Übersicht) nur in dessen Nähe, sonst das ganze Bild
+  let wx0 = 1, wy0 = 1, wx1 = w - 1, wy1 = h - 1;
+  if (zoom === 1 && target) {
+    const r = Math.max(24, Math.round(0.06 * w)), tx = Math.round(target.x * w), ty = Math.round(target.y * h);
+    wx0 = Math.max(1, tx - r); wx1 = Math.min(w - 1, tx + r); wy0 = Math.max(1, ty - r); wy1 = Math.min(h - 1, ty + r);
   }
-  if (bestS < 0) { showFocus(null); return; }
-  const x0 = bi % w, y0 = (bi / w) | 0;
+  let found = brightest(L, w, bg, wx0, wy0, wx1, wy1);
+  if (found.s >= 0 && lastStar && lastStar.zoom === zoom) {   // beim bisherigen Stern bleiben, solange er ähnlich hell ist
+    const r = Math.max(12, Math.round(0.04 * w)), px = Math.round(lastStar.x * w), py = Math.round(lastStar.y * h);
+    const near = brightest(L, w, bg, Math.max(wx0, px - r), Math.max(wy0, py - r), Math.min(wx1, px + r), Math.min(wy1, py + r));
+    if (near.s >= 0.7 * found.s) found = near;
+  }
+  if (found.s < 0) { lastStar = null; showFocus(null); return; }
+  const bi = found.i, x0 = bi % w, y0 = (bi / w) | 0;
+  lastStar = {x: x0 / w, y: y0 / h, zoom};
   let peak = 0;
   for (let y = y0 - 1; y <= y0 + 1; y++) for (let x = x0 - 1; x <= x0 + 1; x++) peak = Math.max(peak, L[y * w + x]);
   if (peak - bg < 30) { showFocus(null); return; }
@@ -1056,13 +1110,14 @@ async function zoomTo(z) {
 $('#lvBtn').onclick = () => api('/api/liveview', {on: !(S && S.liveview.on)});
 $$('.z').forEach(b => b.onclick = () => zoomTo(+b.dataset.z));
 $$('.mv').forEach(b => b.onclick = () => api('/api/zoommove', {dx: +b.dataset.dx, dy: +b.dataset.dy}));
-$('#centerBtn').onclick = () => { target = null; api('/api/zoommove', {center: true}); };
+$('#centerBtn').onclick = () => { target = null; lastStar = null; api('/api/zoommove', {center: true}); };
 $$('.fc').forEach(b => b.onclick = () => api('/api/focus', {step: +b.dataset.s}));
 $('#fReset').onclick = () => { hist = []; best = null; drawSpark(); };
 
 $('#lv').addEventListener('click', ev => {
   if (!S || !S.liveview.on || S.liveview.zoom !== 1) return;
   target = imgPoint(ev);
+  lastStar = null;
   placeMarker();
 });
 $('#lv').addEventListener('dblclick', ev => {

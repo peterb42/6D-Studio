@@ -336,6 +336,7 @@ class Studio:
         self.live = None                    # livestack.LiveStack
         self.master_job = None              # Master-Erstellung (läuft im Hintergrund)
         self.last_light = None              # ISO, Zeit, Temperatur der letzten Lights (für passende Darks)
+        self.used_index = {}                # (Ordner, Typ) → höchste vergebene Bildnummer (Downloads hinken nach)
         # Verbindung
         self.cam_cmd = self.cam_evt = None
         self.cli_cmd = self.cli_evt = None
@@ -995,7 +996,8 @@ class Studio:
             self.series = {
                 "active": True, "type": ftype, "label": label, "target": target, "count": count,
                 "exposure": exposure, "pause": pause, "bulb": bulb, "download": download, "master": master,
-                "session": session, "folder": folder, "first": astro.next_index(folder, ftype),
+                "session": session, "folder": folder,
+                "first": max(astro.next_index(folder, ftype), self.used_index.get((folder, ftype), 0) + 1),
                 "done": 0, "index": 0, "phase": "startet", "phase_end": None, "started": now,
                 "stop": 0, "error": None, "last": None, "files": [],
             }
@@ -1060,6 +1062,8 @@ class Studio:
         with self.lock:
             self.pending_frame = frame
             s["index"], s["last"] = index - s["first"] + 1, frame["base"]
+            key = (s["folder"], s["type"])
+            self.used_index[key] = max(self.used_index.get(key, 0), index)
         if s["bulb"]:
             self.bulb_start(quiet=True)
             self._series_wait(s, "belichtet", planned, stop_level=2)
@@ -1115,7 +1119,13 @@ class Studio:
         self._live_or_error().reset()
 
     def act_live_view(self, body):
-        self._live_or_error().set_view(body.get("stretch"), body.get("black"))
+        self._live_or_error().set_view(body.get("stretch"), body.get("black"), body.get("flatten"))
+
+    def act_live_analyze(self, body):
+        live = self._live_or_error()
+        if not live.frames:
+            raise CameraError("Noch nichts gestapelt")
+        live.request_analysis()
 
     def act_live_save(self, body):
         try:
@@ -1369,6 +1379,7 @@ class Handler(BaseHTTPRequestHandler):
                "/api/live/start": "act_live_start", "/api/live/stop": "act_live_stop",
                "/api/live/reset": "act_live_reset", "/api/live/view": "act_live_view",
                "/api/live/save": "act_live_save", "/api/live/folder": "act_live_folder",
+               "/api/live/analyze": "act_live_analyze",
                "/api/library/delete": "act_library_delete", "/api/library/build": "act_library_build"}
 
     def log_message(self, *a):

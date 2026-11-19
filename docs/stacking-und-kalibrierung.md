@@ -111,12 +111,24 @@ praktisch zum Ausprobieren ohne Kamera.
 | Schritt | Wie | Vorbild |
 |---|---|---|
 | 1. Bias abziehen | Master-Bias gleicher ISO, sonst Schwarzwert der Kamera (2047) | Siril „=2048“ |
-| 2. Dark abziehen | Wärmesignal = Master-Dark − Bias, mal **k**. Dark-Optimierung: k ∈ [0, 2] per Goldener-Schnitt-Suche (Toleranz 0,001), kleinste Streuung im 512×512-Feld der Bildmitte, je Farbe des Bayer-Musters | Siril `-opt` |
+| 2. Dark abziehen | Wärmesignal = Master-Dark − Bias, mal **k**. Dark-Optimierung: k ∈ [0, 4] per Goldener-Schnitt-Suche (Toleranz 0,001), kleinste Streuung im 512×512-Feld der Bildmitte, je Farbe des Bayer-Musters – **ohne die Pixel der Hotpixel-Karte** (Schritt 3 ersetzt sie ohnehin) | Siril `-opt` |
 | 3. Hotpixel | aus dem Wärmesignal (Median + 5σ, höchstens 1 %), ersetzt durch die 4 gleichfarbigen Nachbarn; dazu ein Filter je Bild für Reste und kosmische Strahlung (Sterne bleiben, weil ihr Licht mehrere Pixel trifft) | Siril „cosmetic correction“ |
 | 4. Debayer | Superpixel (halbe Auflösung, 6D: 2748 × 1835) | Siril „Superpixel“ |
-| 5. Ausrichten | bis 60 Sterne (Blockhintergrund, 5σ, Schwerpunkt), Dreiecke aus je 5 Nachbarn, log. Seitenverhältnisse vergleichen, Ähnlichkeitstransformation (Verschiebung + Drehung), mit allen Paaren verfeinert | astroalign, Siril `-rotate` |
+| 5. Ausrichten | bis 100 Sterne (Blockhintergrund, 5σ, Schwerpunkt), Dreiecke aus je 5 Nachbarn, log. Seitenverhältnisse vergleichen → grobe Ähnlichkeit (Verschiebung + Drehung); dann **Homographie** über alle Sterne, Toleranz schrittweise 16 → 2 px | astroalign, Siril `-transf=homography` |
 | 6. Mitteln | bilinear auf das erste Bild verzerren, laufender Mittelwert mit Abdeckung je Pixel; optional hellsten Wert je Pixel verwerfen | OpenLiveStacker „Remove Satellites“ |
-| 7. Anzeige | Weißabgleich der Kamera, je Farbe Hintergrund neutral, Midtones Transfer Function (Schatten: Median − 2,8 · MAD, Hintergrund auf 25 %) | Siril/PixInsight Autostretch |
+| 7. Anzeige | **Hintergrund ebnen** (Ebene + radiale Vignettierung, an Block-Mediane angepasst, helle Bereiche ausgespart), Weißabgleich der Kamera, Midtones Transfer Function je Farbe (Schatten: Median − 2,8 · MAD, Hintergrund auf 25 %) | Siril/PixInsight Autostretch, Siril Hintergrundextraktion |
+| 8. Bildanalyse | alle 10 Bilder, am Ende und per „Bild prüfen“ – siehe unten | – |
+
+**Warum Homographie:** Auf dem Stativ dreht sich der Himmel um die Kamera. Ein (verzeichnungsfreies) Objektiv
+bildet eine solche Drehung exakt als projektive Abbildung ab (Bild = K·R·K⁻¹), nicht als Drehen + Verschieben.
+Bei Teleobjektiven ist der Unterschied winzig, bei Weitwinkel groß: gemessen an der 6D mit 24 mm nach 0,7°
+Bildfelddrehung lagen Sterne am Rand mit Drehen + Verschieben **7 px** daneben (Doppelsterne zum Rand hin), mit
+Homographie **0,2 px**.
+
+**Warum Hintergrund ebnen:** Die automatische Streckung setzt den Schwarzpunkt knapp unter den Median des
+Himmels. Was dunkler ist – Ecken mit Vignettierung, die Seite gegenüber der Lichtverschmutzung – wird schwarz
+abgeschnitten, umso mehr, je rauschärmer der Stapel wird. Gemessen: Ecken 15 % dunkler bei f/4. Das Ebnen
+wirkt nur auf die Anzeige und das PNG; im FITS bleibt alles linear, dort korrigieren Flats die Vignettierung.
 
 JPEGs gehen ab Schritt 4 ohne Kalibrierung (JPEGs sind nicht linear). Bilder mit weniger als 6 zugeordneten
 Sternen werden verworfen (Wolken, Verwackeln) und in der Liste mit Grund angezeigt.
@@ -124,11 +136,33 @@ Sternen werden verworfen (Wolken, Verwackeln) und in der Liste mit Grund angezei
 **Dark-Optimierung verstehen:** k ist der Faktor mit dem kleinsten Gesamtrauschen – nicht das reine
 Temperaturverhältnis. Sind die Darks gut (viele, lange Zeit), liegt k nahe am Verhältnis des Wärmesignals (z. B.
 0,5 bei 6 °C kälteren Lights). Bei wenigen, kurzen Darks bringt der Master eigenes Rauschen mit, dann ist k
-kleiner – das ist Absicht. k steht je Bild in der Liste.
+kleiner – das ist Absicht. k steht je Bild in der Liste. Die Hotpixel bleiben bei der Suche außen vor: An der
+echten 6D (3 s, Darks 27 °C, Lights 35–40 °C) trieben sie k an den alten Anschlag 2, ohne sie ergab sich 0,55 –
+bei gleichem Rauschen im Stapel, denn die Hotpixel ersetzt ohnehin die Hotpixel-Karte.
 
-**Gemessen** (MacBook M1): ein 6D-RAW braucht ~1,3 s (Laden 0,3 s, Hotpixel 0,14 s, Sterne 0,09 s, Verzerren
-0,4 s, Anzeige 0,2 s) – wenig gegen ~25 s Download über den Hotspot. Der Kamera-Thread wird dabei höchstens 7 ms
-aufgehalten (Bulb-Stopp bleibt pünktlich). Ausrichtung im Test: 0,001° und 0,02 px Fehler.
+**Bildanalyse** (Karte „Live-Stack“ → „Bildanalyse“, `studio/analysis.py`): prüft das Stapelbild und die
+Kalibrierung und sagt, was zu tun ist – ✓ in Ordnung, i Hinweis, ! Verbesserung möglich:
+
+| Prüfung | Gemessen | Empfehlung, z. B. |
+|---|---|---|
+| Bias | Master vorhanden? Anzahl | 30–50 Bias bei der ISO der Lights |
+| Dark – Temperatur | Darks vs. Lights (Sensortemperatur aus der CR2), ab 5 °C | Darks direkt nach den Lights – die 6D heizt sich im Livebild um 10 °C auf |
+| Dark – Faktor | k am Anschlag 0 oder 4? | Darks passen nicht – neu aufnehmen |
+| Dark – Wärmesignal | Wärmesignal im Light vs. Rauschen | kurze Belichtung: Dark wirkt v. a. als Hotpixel-Karte, Anzahl zählt |
+| Dark – Rauschgrenze | Rauschen des Masters × k gegen Einzelbild: ab N ≈ (σ_Bild / (k·σ_Master))² Bildern begrenzt der Master | mehr Darks – die Grenze wächst mit ihrer Anzahl |
+| Rauschgewinn | Stapel-Rauschen vs. Einzelbild/√N (je Bild nach dem Verzerren gemessen) | festes Muster → passende Kalibrierung, Dithering |
+| Hintergrund | Vignettierung (Ecken vs. Mitte), Gradient, helle Bereiche je Neuntel, Überbelichtung | Flats; Lichtquelle/Wolke |
+| Sterne | FWHM und Form in Mitte und Rand, Stapel vs. Einzelbild, Restfehler der Ausrichtung | Abblenden (Koma), Stativ/Wind |
+| Bilder | verworfene, Wolken (Hintergrund +20 % oder −40 % Sterne), Temperaturverlauf | Bilder aussortieren |
+
+Ergebnis an der echten 6D (50 × 3 s, ISO 800, f/4): Darks 9 °C kälter (bei 3 s unkritisch), Master-Dark begrenzt
+ab ~56 Bildern (mit 50 statt 20 Darks ab ~140), Ecken 15 % dunkler, Rauschen sinkt wie √N, Sterne bis in die
+Ecken rund.
+
+**Gemessen** (MacBook M1): ein 6D-RAW braucht ~1,4 s (Laden 0,3 s, Hotpixel 0,14 s, Sterne 0,1 s, Verzerren
+0,5 s, Anzeige 0,2 s), die Bildanalyse ~1 s alle 10 Bilder – wenig gegen ~25 s Download über den Hotspot. Der
+Kamera-Thread wird dabei höchstens 7 ms aufgehalten (Bulb-Stopp bleibt pünktlich). Restfehler der Ausrichtung an
+der echten 6D: 0,22 px im Median.
 
 **Grenzen:** Mittelwert ohne Ausreißerverwerfung (außer „Satelliten“) – für das Endbild die RAWs in Siril
 stapeln. Keine Flats im Live-Stack (noch). Der Vordergrund verschmiert, weil auf die Sterne ausgerichtet wird.
