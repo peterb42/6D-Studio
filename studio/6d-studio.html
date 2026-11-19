@@ -94,6 +94,33 @@ table.mini th{color:var(--muted);font-weight:600;text-align:left;padding:3px 4px
 table.mini td{padding:4px;border-bottom:1px solid var(--line);vertical-align:top}
 table.mini tr.match td{color:#fff;background:#13241a}
 table.mini td.why{color:var(--muted)}
+.gal{display:grid;grid-template-columns:230px minmax(0,1fr);gap:12px;min-height:62vh}
+.galnav{border-right:1px solid var(--line);padding-right:10px;max-height:74vh;overflow:auto;font-size:13px}
+.galnav .src{margin:12px 0 3px;font-weight:600;font-size:12px;display:flex;gap:6px;align-items:baseline}
+.galnav .src:first-child{margin-top:0}
+.galnav .src small{color:var(--muted);font-weight:500}
+.galnav .grp{display:flex;justify-content:space-between;padding:4px 8px;border-radius:6px;cursor:pointer}
+.galnav .grp:hover{background:#1b2230}
+.galnav .grp.on{background:#22324d;color:#fff}
+.galnav .grp small{color:var(--muted)}
+.galnav .tag2{font-size:10px;border:1px solid var(--line);border-radius:4px;padding:0 4px;color:var(--muted)}
+.galbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px}
+.galbar .spacer{flex:1}
+.galpanel{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.galpanel .hint{flex-basis:100%}
+.galgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;max-height:60vh;overflow:auto;align-content:start}
+.gi{position:relative;background:#0b0e14;border:2px solid transparent;border-radius:8px;overflow:hidden;cursor:pointer;user-select:none}
+.gi.sel{border-color:var(--accent)}
+.gi.focus{box-shadow:0 0 0 1px #fff6}
+.gi img{width:100%;aspect-ratio:3/2;object-fit:cover;display:block;background:#000}
+.gi .cap{font-size:11px;padding:3px 6px 4px;color:var(--muted);display:flex;justify-content:space-between;gap:4px;white-space:nowrap;overflow:hidden}
+.gi .cap b{color:var(--text);font-weight:600;overflow:hidden;text-overflow:ellipsis}
+.gi .badge2{position:absolute;top:5px;right:5px;font-size:10px;background:#000a;border-radius:4px;padding:1px 5px;color:#ddd}
+.gi .tick{position:absolute;top:5px;left:5px;width:16px;height:16px;border-radius:4px;border:1.5px solid #fffa;background:#0007;font-size:12px;line-height:14px;text-align:center;color:#fff}
+.gi.sel .tick{background:var(--accent);border-color:var(--accent)}
+.galinfo{font-size:12px;margin-top:8px;color:var(--muted);min-height:1.4em}
+.galviewer{position:fixed;inset:0;background:#000e;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;z-index:60;cursor:zoom-out}
+.galviewer img{max-width:96vw;max-height:90vh;object-fit:contain}
 .anahead{display:flex;align-items:center;gap:8px;margin-top:14px;padding-top:10px;border-top:1px solid var(--line)}
 .anahead .hint{flex:1;margin:0}
 .ana .it{display:grid;grid-template-columns:16px 1fr;gap:0 6px;margin:8px 0;font-size:13px}
@@ -148,20 +175,20 @@ body.night #red{display:block}
   <section class="card">
     <div class="toolbar">
       <div class="group" title="Was das große Bild zeigt (Taste V)"><span class="lbl">Anzeige</span>
-        <button class="btn view" data-v="lv">Kamera</button><button class="btn view" data-v="stack">Live-Stack</button>
+        <button class="btn view" data-v="lv">Kamera</button><button class="btn view" data-v="stack">Live-Stack</button><button class="btn view" data-v="gallery" title="Bildverwaltung: Sitzungen, Einzelaufnahmen, Live-Stacks – weitergeben an PixInsight, Siril und andere (Taste B)">Bilder</button>
       </div>
-      <div class="group"><button class="btn" id="lvBtn">Livebild</button></div>
-      <div class="group"><span class="lbl">Lupe</span>
+      <div class="group lvonly"><button class="btn" id="lvBtn">Livebild</button></div>
+      <div class="group lvonly"><span class="lbl">Lupe</span>
         <button class="btn z" data-z="1">1×</button><button class="btn z" data-z="5">5×</button><button class="btn z" data-z="10">10×</button>
       </div>
-      <div class="group"><span class="lbl">Ausschnitt</span>
+      <div class="group lvonly"><span class="lbl">Ausschnitt</span>
         <button class="btn mv" data-dx="-1" data-dy="0" title="nach links">◀</button>
         <button class="btn mv" data-dx="0" data-dy="-1" title="nach oben">▲</button>
         <button class="btn mv" data-dx="0" data-dy="1" title="nach unten">▼</button>
         <button class="btn mv" data-dx="1" data-dy="0" title="nach rechts">▶</button>
         <button class="btn" id="centerBtn" title="Lupe auf Bildmitte">Mitte</button>
       </div>
-      <div class="group"><button class="btn" id="crossBtn" title="Fadenkreuz einblenden">Fadenkreuz</button></div>
+      <div class="group lvonly"><button class="btn" id="crossBtn" title="Fadenkreuz einblenden">Fadenkreuz</button></div>
     </div>
 
     <div class="stage" id="stage">
@@ -175,6 +202,39 @@ body.night #red{display:block}
       <div class="tag" id="stacktag" hidden></div>
     </div>
 
+    <div id="gallery" hidden>
+      <div class="gal">
+        <nav class="galnav" id="galNav"><span class="hint">Lade …</span></nav>
+        <section class="galmain">
+          <div class="galbar">
+            <b id="galTitle"></b><span class="hint" id="galSub"></span><span class="spacer"></span>
+            <button class="btn" id="galAll" title="Alle auswählen / keine">Alle</button>
+            <select id="galOpen" title="Ausgewählte Bilder in einem installierten Programm öffnen"></select>
+            <button class="btn" id="galFinder" title="Im Finder zeigen">Finder</button>
+            <button class="btn" id="galCull" title="Nach verworfen/ verschieben – Siril und PixInsight lassen sie dann weg">Aussortieren</button>
+            <button class="btn" id="galAdopt" title="Einzelaufnahmen nach der Namenskonvention in eine Sitzung verschieben">In Sitzung übernehmen …</button>
+            <button class="btn" id="galPI" title="Ordner für WBPP mit Light/Dark/Flat/Bias, Listen und bilder.csv anlegen">Für PixInsight</button>
+            <button class="btn" id="galSiril" title="Siril-Arbeitsordner und Vorverarbeitungs-Skript">Siril …</button>
+          </div>
+          <div class="galpanel" id="galAdoptRow" hidden>
+            <span class="lbl">Als</span><select id="galType"></select>
+            <span class="lbl">Objekt</span><input type="text" id="galTarget" maxlength="40" placeholder="z. B. Milchstraße">
+            <button class="btn primary" id="galAdoptGo">Übernehmen</button><button class="btn" id="galAdoptNo">Abbrechen</button>
+            <div class="hint">Verschiebt RAW und JPEG in Astro/&lt;Nacht&gt;_&lt;Objekt&gt;/, benennt sie wie Serienbilder und trägt sie in serie.csv ein.</div>
+          </div>
+          <div class="galpanel" id="galSirilRow" hidden>
+            <button class="btn" id="galSirilScript">Skript erstellen</button>
+            <button class="btn primary" id="galSirilRun">In Siril vorverarbeiten</button>
+            <button class="btn" id="galSirilNo">Schließen</button>
+            <div class="hint" id="galSirilInfo"></div>
+          </div>
+          <div class="galgrid" id="galGrid"></div>
+          <div class="galinfo" id="galInfo"></div>
+        </section>
+      </div>
+      <div class="note" id="galTools"></div>
+    </div>
+    <div class="galviewer" id="galViewer" hidden><img id="galViewerImg" alt=""><div class="hint" id="galViewerCap"></div></div>
     <div class="under" id="stackUnder" hidden>
       <div class="group" title="Nur die Anzeige – die gespeicherten FITS-Daten bleiben linear">
         <span class="lbl">Helligkeit</span><input type="range" id="stStretch" min="0.05" max="0.5" step="0.01" value="0.25">
@@ -513,6 +573,7 @@ function render() {
   renderLive();
   if (S.library_seq !== libSeq) { libSeq = S.library_seq; loadLibrary(); }
   renderLibrary();
+  if (view === 'gallery') renderGalJob();
 
   // Fotos
   const ph = S.photos;
@@ -655,10 +716,13 @@ const shortName = n => n.length > 26 ? '…' + n.slice(-24) : n;
 function setView(v) {
   view = v;
   $$('.view').forEach(b => b.classList.toggle('on', b.dataset.v === v));
-  const st = v === 'stack';
-  $('#lv').hidden = st; $('#stackImg').hidden = !st;
-  $('#lvUnder').hidden = st; $('#lvNote').hidden = st; $('#stackUnder').hidden = !st;
+  const st = v === 'stack', gal = v === 'gallery';
+  $('#lv').hidden = v !== 'lv'; $('#stackImg').hidden = !st;
+  $('#stage').hidden = gal; $('#gallery').hidden = !gal;
+  $('#lvUnder').hidden = v !== 'lv'; $('#lvNote').hidden = v !== 'lv'; $('#stackUnder').hidden = !st;
+  $$('.lvonly').forEach(el => el.hidden = gal);
   $('#starbox').style.display = 'none';
+  if (gal) loadGallery(true);
   if (S) render();
 }
 async function loadStack() {
@@ -1059,6 +1123,233 @@ $('#wzStart').onclick = async () => {
   if (ok && S.series && S.series.started !== before) wiz.sid = S.series.started;
 };
 
+
+// ---------------------------------------------------------------- Bildverwaltung (gallery.py)
+let GAL = {info: null, source: null, group: null, items: [], sel: new Set(), focus: null, last: null, panel: null};
+const enc = encodeURIComponent;
+const fmtSize = b => b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${(b / 1e6).toFixed(b >= 1e8 ? 0 : 1)} MB`;
+const FRAME_GROUPS = ['lights', 'darks', 'biases', 'flats', 'darkflats'];
+async function apiJson(path, body) {                    // wie api(), liefert aber die ganze Antwort
+  try {
+    const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
+    const j = await r.json();
+    if (!j.ok) toast(j.error || 'Fehler');
+    poll(true);
+    return j.ok ? j : null;
+  } catch (e) { toast('6D Studio ist nicht erreichbar'); return null; }
+}
+function galSources() {
+  if (!GAL.info) return [];
+  const I = GAL.info.index;
+  const date = d => d ? d.split('-').reverse().join('.') : '';
+  return I.sessions.map(x => ({id: x.id, title: x.target, sub: date(x.night), groups: x.groups, export: x.export, siril: x.siril}))
+    .concat(I.singles.map(x => ({id: x.id, title: 'Einzelaufnahmen', sub: date(x.night), groups: x.groups})))
+    .concat(I.library.map(x => ({id: x.id, title: x.name, sub: '', groups: x.groups})));
+}
+async function loadGallery(keep) {
+  try { GAL.info = await (await fetch('/api/gallery', {cache: 'no-store'})).json(); } catch (e) { return; }
+  const src = galSources();
+  const ok = src.some(x => x.id === GAL.source && x.groups.some(g => g.key === GAL.group));
+  if (!keep || !ok) {
+    const first = src[0];
+    GAL.source = first ? first.id : null;
+    GAL.group = first ? (first.groups.find(g => g.key === 'lights') || first.groups[0]).key : null;
+  }
+  renderGalNav();
+  await loadGalItems();
+}
+async function loadGalItems() {
+  GAL.items = [];
+  if (GAL.source) {
+    try {
+      const j = await (await fetch(`/api/gallery/items?source=${enc(GAL.source)}&group=${enc(GAL.group)}`, {cache: 'no-store'})).json();
+      GAL.items = j.items || [];
+      if (j.error) toast(j.error);
+    } catch (e) {}
+  }
+  GAL.sel = new Set([...GAL.sel].filter(id => GAL.items.some(i => i.id === id)));
+  if (!GAL.items.some(i => i.id === GAL.focus)) GAL.focus = null;
+  renderGalItems();
+}
+function renderGalNav() {
+  const src = galSources();
+  $('#galNav').innerHTML = !src.length ? '<span class="hint">Noch keine Bilder.</span>' : src.map(x =>
+    `<div class="src">${esc(x.title)} <small>${esc(x.sub)}</small>${x.export ? ' <span class="tag2" title="PixInsight-Export vorhanden">PI</span>' : ''}${x.siril ? ' <span class="tag2" title="Siril-Skript vorhanden">Siril</span>' : ''}</div>`
+    + x.groups.map(g => `<div class="grp${x.id === GAL.source && g.key === GAL.group ? ' on' : ''}" data-s="${esc(x.id)}" data-g="${esc(g.key)}" title="${g.files} Dateien · ${fmtSize(g.size)}"><span>${esc(g.label)}</span><small>${g.count}</small></div>`).join('')).join('');
+}
+$('#galNav').addEventListener('click', e => {
+  const g = e.target.closest('.grp');
+  if (!g) return;
+  GAL.source = g.dataset.s; GAL.group = g.dataset.g; GAL.sel.clear(); GAL.focus = null; GAL.panel = null;
+  renderGalNav(); loadGalItems();
+});
+function galCaption(it) {
+  const m = it.meta || {}, parts = [];
+  if (m.iso) parts.push(`ISO ${m.iso}`);
+  if (m.exposure) parts.push(fmtExp(m.exposure));
+  if (m.n) parts.push(`${m.n}×`);
+  return parts.join(' · ');
+}
+function galShort(it) {
+  const n = it.name, m = n.match(/_(\d{4})$/);
+  return m ? m[1] : n.length > 22 ? '…' + n.slice(-20) : n;
+}
+function galKinds(it) { return [...new Set(it.files.map(f => f.kind))].map(k => ({raw: 'RAW', jpeg: 'JPG', fits: 'FITS', png: 'PNG', tiff: 'TIFF'}[k] || k)).join('+'); }
+function renderGalItems() {
+  const src = galSources().find(x => x.id === GAL.source), grp = src && src.groups.find(g => g.key === GAL.group);
+  $('#galTitle').textContent = src ? `${src.title}${grp ? ' · ' + grp.label : ''}` : 'Bilder';
+  $('#galSub').textContent = GAL.items.length ? `${GAL.items.length} Bilder${GAL.sel.size ? ` · ${GAL.sel.size} ausgewählt` : ''}` : '';
+  $('#galGrid').innerHTML = !GAL.items.length ? '<span class="hint">Keine Bilder in dieser Gruppe.</span>' : GAL.items.map((it, i) =>
+    `<div class="gi${GAL.sel.has(it.id) ? ' sel' : ''}${GAL.focus === it.id ? ' focus' : ''}" data-i="${i}" title="${esc(it.name)}">`
+    + `<img loading="lazy" src="/api/gallery/thumb?rel=${enc(it.preview)}&size=360" alt="">`
+    + `<span class="tick">${GAL.sel.has(it.id) ? '✓' : ''}</span><span class="badge2">${galKinds(it)}</span>`
+    + `<div class="cap"><b>${esc(galShort(it))}</b><span>${esc(galCaption(it))}</span></div></div>`).join('');
+  renderGalInfo();
+  renderGalBar();
+}
+function renderGalInfo() {
+  const it = GAL.items.find(i => i.id === GAL.focus);
+  if (!it) { $('#galInfo').textContent = GAL.items.length ? 'Klick wählt aus (Shift: Bereich), Doppelklick zeigt groß.' : ''; return; }
+  const m = it.meta || {}, parts = [it.name];
+  if (m.time) parts.push(m.time);
+  if (m.type) parts.push(m.type);
+  if (m.iso) parts.push(`ISO ${m.iso}`);
+  if (m.exposure) parts.push(fmtExp(m.exposure));
+  if (m.temp !== null && m.temp !== undefined) parts.push(fmtTemp(m.temp));
+  if (m.fnumber || m.focal) parts.push(fmtOptics(m));
+  if (m.lens) parts.push(m.lens);
+  if (m.n) parts.push(`${m.n} Bilder`);
+  parts.push(it.files.map(f => `${f.kind.toUpperCase()} ${fmtSize(f.size)}`).join(' + '));
+  if (it.from) parts.push(`aus ${it.from}`);
+  $('#galInfo').textContent = parts.join(' · ');
+}
+function galPicked() {                                  // Auswahl, sonst das zuletzt angeklickte Bild
+  const sel = GAL.items.filter(i => GAL.sel.has(i.id));
+  if (sel.length) return sel;
+  const f = GAL.items.find(i => i.id === GAL.focus);
+  return f ? [f] : [];
+}
+function galFileFor(it, kinds) {                        // erste Datei des Bilds, die das Programm kann
+  const f = it.files.find(x => kinds.includes(x.kind));
+  return f ? f.rel : null;
+}
+function renderGalBar() {
+  const picked = galPicked(), src = GAL.source || '', session = src.startsWith('s:');
+  const tools = GAL.info ? GAL.info.tools : [];
+  const usable = tools.filter(t => picked.length && picked.every(it => galFileFor(it, t.kinds)));
+  fillOptions($('#galOpen'), [['', picked.length ? 'Öffnen mit …' : 'Öffnen mit … (nichts gewählt)']]
+    .concat(usable.map(t => [t.id, `${t.name} – ${t.hint}`])));
+  $('#galOpen').disabled = !usable.length;
+  $('#galFinder').disabled = !picked.length;
+  const frames = session && FRAME_GROUPS.includes(GAL.group), rejected = session && GAL.group === 'verworfen';
+  $('#galCull').hidden = !(frames || rejected);
+  $('#galCull').textContent = rejected ? 'Zurücklegen' : 'Aussortieren';
+  $('#galCull').disabled = !picked.length;
+  $('#galAdopt').hidden = !src.startsWith('n:');
+  $('#galAdopt').disabled = !picked.length;
+  $('#galPI').hidden = $('#galSiril').hidden = !session;
+  $('#galAdoptRow').hidden = GAL.panel !== 'adopt' || !src.startsWith('n:');
+  $('#galSirilRow').hidden = GAL.panel !== 'siril' || !session;
+  $('#galAll').textContent = GAL.sel.size && GAL.sel.size === GAL.items.length ? 'Keine' : 'Alle';
+  if (GAL.info) {
+    const names = tools.map(t => t.name).join(', ');
+    const missing = [['siril', 'Siril (kostenlos, siril.org) – Kalibrieren, Stapeln, Nachbearbeiten'],
+      ['graxpert', 'GraXpert (kostenlos, graxpert.com) – Gradienten, Entrauschen'],
+      ['sls', 'Starry Landscape Stacker (Mac App Store) – Milchstraße mit Vordergrund']]
+      .filter(([id]) => !tools.some(t => t.id === id)).map(([, t]) => t);
+    $('#galTools').textContent = `Programme gefunden: ${names || 'keine'}.` + (missing.length ? ` Empfohlen, nicht installiert: ${missing.join(' · ')}.` : '')
+      + ` Ablage: ${GAL.info.out}`;
+  }
+  renderGalJob();
+}
+let galJobActive = false;
+function renderGalJob() {
+  const j = S && S.gallery_job, info = $('#galSirilInfo');
+  if (galJobActive && j && !j.active) loadGallery(true);   // Siril fertig → Ergebnis erscheint links
+  galJobActive = !!(j && j.active);
+  $('#galSirilRun').disabled = !(GAL.info && GAL.info.siril) || !!(j && j.active);
+  $('#galSirilRun').title = GAL.info && GAL.info.siril ? 'Skript mit siril-cli im Hintergrund ausführen' : 'Siril ist nicht installiert (siril.org)';
+  if (j && (j.active || j.error || j.result) && j.session === (GAL.source || '').slice(2))
+    info.textContent = j.active ? `Siril läuft · ${j.lines} Zeilen · ${j.last}` : j.error ? `Fehler: ${j.error}` : `Fertig: ${j.result}`;
+}
+$('#galGrid').addEventListener('click', e => {
+  const el = e.target.closest('.gi');
+  if (!el) return;
+  const i = +el.dataset.i, it = GAL.items[i];
+  if (e.shiftKey && GAL.last !== null) {
+    const [a, b] = [Math.min(GAL.last, i), Math.max(GAL.last, i)];
+    for (let k = a; k <= b; k++) GAL.sel.add(GAL.items[k].id);
+  } else if (GAL.sel.has(it.id)) GAL.sel.delete(it.id);
+  else GAL.sel.add(it.id);
+  GAL.last = i; GAL.focus = it.id;
+  renderGalItems();
+});
+$('#galGrid').addEventListener('dblclick', e => {
+  const el = e.target.closest('.gi');
+  if (!el) return;
+  const it = GAL.items[+el.dataset.i];
+  $('#galViewerImg').src = `/api/gallery/thumb?rel=${enc(it.preview)}&size=1600`;
+  $('#galViewerCap').textContent = `${it.name} · ${galCaption(it)} – Klick oder Esc schließt`;
+  $('#galViewer').hidden = false;
+});
+$('#galViewer').onclick = () => { $('#galViewer').hidden = true; };
+$('#galAll').onclick = () => {
+  if (GAL.sel.size === GAL.items.length) GAL.sel.clear(); else GAL.items.forEach(i => GAL.sel.add(i.id));
+  renderGalItems();
+};
+$('#galOpen').onchange = async e => {
+  const tool = e.target.value, t = GAL.info.tools.find(x => x.id === tool);
+  e.target.value = '';
+  if (!t) return;
+  const rels = galPicked().map(it => galFileFor(it, t.kinds)).filter(Boolean);
+  if (await apiJson('/api/gallery/open', {rels, tool})) toast(`${rels.length} Bild${rels.length === 1 ? '' : 'er'} → ${t.name}`);
+};
+$('#galFinder').onclick = () => { const p = galPicked(); if (p.length) apiJson('/api/gallery/open', {rels: [p[0].id], reveal: true}); };
+$('#galCull').onclick = async () => {
+  const rels = galPicked().map(it => it.id), restore = GAL.group === 'verworfen';
+  if (!rels.length || (!restore && !confirm(`${rels.length} Bild${rels.length === 1 ? '' : 'er'} nach „verworfen“ verschieben?`))) return;
+  if (await apiJson('/api/gallery/cull', {rels, restore})) { GAL.sel.clear(); loadGallery(true); }
+};
+$('#galAdopt').onclick = () => {
+  GAL.panel = GAL.panel === 'adopt' ? null : 'adopt';
+  if (GAL.info) fillOptions($('#galType'), Object.entries(GAL.info.frame_types), 'light');
+  if (!$('#galTarget').value) $('#galTarget').value = $('#sTarget').value;
+  renderGalBar();
+};
+$('#galAdoptNo').onclick = () => { GAL.panel = null; renderGalBar(); };
+$('#galAdoptGo').onclick = async () => {
+  const rels = galPicked().map(it => it.id);
+  const j = await apiJson('/api/gallery/adopt', {rels, type: $('#galType').value, target: $('#galTarget').value.trim()});
+  if (j) {
+    toast(`${j.rels.length} Dateien übernommen`);
+    GAL.panel = null; GAL.sel.clear();
+    const parts = (j.rels[0] || '').split('/');          // Astro/<Sitzung>/<Ordner>/<Datei> → dorthin wechseln
+    if (parts.length === 4) { GAL.source = 's:' + parts[1]; GAL.group = parts[2]; }
+    loadGallery(true);
+  }
+};
+$('#galPI').onclick = async () => {
+  const j = await apiJson('/api/gallery/export', {session: GAL.source.slice(2)});
+  if (!j) return;
+  const e = j.export, names = GAL.info.frame_types;
+  const parts = Object.entries(e.counts).map(([t, n]) => `${n} ${names[t]}`);
+  const skipped = Object.entries(e.skipped || {}).map(([t, n]) => `${n} ${names[t]} mit anderer ISO/Zeit/Optik weggelassen`);
+  toast(`PixInsight-Ordner angelegt: ${parts.join(', ')}${skipped.length ? ' (' + skipped.join(', ') + ')' : ''}. In WBPP: „+ Directory“ → pixinsight`);
+  loadGallery(true);
+};
+$('#galSiril').onclick = () => { GAL.panel = GAL.panel === 'siril' ? null : 'siril'; renderGalBar(); };
+$('#galSirilNo').onclick = () => { GAL.panel = null; renderGalBar(); };
+async function galSiril(run) {
+  const j = await apiJson('/api/gallery/siril', {session: GAL.source.slice(2), run});
+  if (!j) return;
+  const names = GAL.info.frame_types;
+  $('#galSirilInfo').textContent = `Skript: ${j.siril.script} · ` + Object.entries(j.siril.used).filter(([, u]) => u)
+    .map(([t, u]) => `${names[t]}: ${u}`).join(' · ') + (run ? ' · Siril läuft …' : '');
+  loadGallery(true);
+}
+$('#galSirilScript').onclick = () => galSiril(false);
+$('#galSirilRun').onclick = () => galSiril(true);
+
 // ---------------------------------------------------------------- Livebild
 function contentRect() {
   const img = $('#lv'), st = $('#stage').getBoundingClientRect();
@@ -1285,6 +1576,8 @@ document.addEventListener('keydown', e => {
   else if (k === '.') api('/api/focus', {step: 1});
   else if (k === 'n' || k === 'N') $('#nightBtn').click();
   else if (k === 'v' || k === 'V') setView(view === 'stack' ? 'lv' : 'stack');
+  else if (k === 'b' || k === 'B') setView(view === 'gallery' ? 'lv' : 'gallery');
+  else if (k === 'Escape' && !$('#galViewer').hidden) $('#galViewer').hidden = true;
 });
 
 setView(view);

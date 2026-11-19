@@ -6,7 +6,7 @@ Ein Prozess hält die PTP/IP-Verbindung zur Kamera und bietet:
       Livebild mit 5×/10×-Lupe der Kamera, Fokusantrieb, Schärfe-Anzeige für Sterne,
       Bulb Start/Stopp mit Timer, ISO/Blende/Zeit, automatischer Download,
       Serien für Stacking, Live-Stack und Kalibrier-Bibliothek (die letzten beiden brauchen numpy und
-      rawpy aus der venv – siehe requirements.txt).
+      rawpy aus der venv – siehe requirements.txt), Bildverwaltung mit Weitergabe an PixInsight und Siril.
   * Zugang für gphoto2 über ptpip:127.0.0.1 (wird vom Skript 6d-fernsteuerung genutzt).
 
 Eigenheiten der 6D, die hier abgefangen werden:
@@ -60,6 +60,7 @@ ASTRO_DIR = os.path.join(OUT, "Astro")              # Serien für Stacking (sieh
 sys.path.insert(0, HERE)                            # -I lässt den Skriptordner sonst weg
 import astro  # noqa: E402
 import calib  # noqa: E402
+import gallery  # noqa: E402
 import imaging  # noqa: E402
 import livestack  # noqa: E402
 
@@ -338,6 +339,7 @@ class Studio:
         self.last_light = None              # ISO, Zeit, Temperatur der letzten Lights (für passende Darks)
         self.used_index = {}                # (Ordner, Typ) → höchste vergebene Bildnummer (Downloads hinken nach)
         self.last_flat = None               # ISO, Zeit (Median), Blende, Helligkeit der letzten Flats (für Dark-Flats)
+        self.gallery_job = None             # Siril-Vorverarbeitung aus der Bildverwaltung
         # Verbindung
         self.cam_cmd = self.cam_evt = None
         self.cli_cmd = self.cli_evt = None
@@ -1177,6 +1179,106 @@ class Studio:
         self.log("Live-Stack: %d Lights aus %s eingereiht" % (len(files), session))
 
     # ---------- Kalibrier-Bibliothek (calib.py)
+    # ---------- Bildverwaltung (gallery.py)
+    def gallery_info(self):
+        found = gallery.find_tools()
+        return {"index": gallery.index(OUT), "tools": gallery.tools_info(found),
+                "siril": bool(gallery.siril_cli(found)), "out": OUT.replace(os.path.expanduser("~"), "~"),
+                "frame_types": {k: v["label"] for k, v in astro.FRAME_TYPES.items()}}
+
+    def act_gallery_open(self, body):
+        try:
+            gallery.open_with(OUT, body.get("rels") or [], body.get("tool"), bool(body.get("reveal")))
+        except ValueError as e:
+            raise CameraError(str(e)) from None
+
+    def act_gallery_adopt(self, body):
+        """Einzelaufnahmen als Lights (oder Kalibrierbilder) in eine Sitzung übernehmen."""
+        try:
+            with self.lock:
+                new = gallery.adopt(OUT, body.get("rels") or [], body.get("type") or "light", body.get("target"),
+                                    used=self.used_index)
+        except (ValueError, OSError) as e:
+            raise CameraError(str(e)) from None
+        self.log("Übernommen: %d Datei(en) → %s" % (len(new), os.path.dirname(new[0]) if new else "–"))
+        return {"rels": new}
+
+    def act_gallery_cull(self, body):
+        restore = bool(body.get("restore"))
+        try:
+            n = gallery.cull(OUT, body.get("rels") or [], restore=restore)
+        except (ValueError, OSError) as e:
+            raise CameraError(str(e)) from None
+        self.log("%s: %d Datei(en)" % ("Zurückgelegt" if restore else "Aussortiert", n))
+        return {"moved": n}
+
+    def act_gallery_export(self, body):
+        """PixInsight (WBPP): verknüpfte Rohbilder je Typ, Listen und bilder.csv in <Sitzung>/pixinsight/."""
+        try:
+            res = gallery.export_pixinsight(OUT, body.get("session"), self.library)
+        except (ValueError, OSError) as e:
+            raise CameraError(str(e)) from None
+        self.log("PixInsight-Export: %s → %s" % (", ".join("%d %s" % (n, astro.FRAME_TYPES[t]["label"])
+                                                            for t, n in res["counts"].items()),
+                                                  res["folder"].replace(os.path.expanduser("~"), "~")))
+        if body.get("reveal", True):
+            gallery.open_with(OUT, [gallery.rel_of(OUT, os.path.join(res["folder"], "LIESMICH.txt"))], reveal=True)
+        return {"export": res}
+
+    def act_gallery_siril(self, body):
+        """Siril-Arbeitsordner und Skript anlegen; mit run und installiertem Siril gleich vorverarbeiten."""
+        if self.gallery_job and self.gallery_job["active"]:
+            raise CameraError("Siril läuft noch")
+        try:
+            res = gallery.prepare_siril(OUT, body.get("session"), self.library)
+        except (ValueError, OSError) as e:
+            raise CameraError(str(e)) from None
+        self.log("Siril-Skript: %s (%s)" % (res["script"].replace(os.path.expanduser("~"), "~"),
+                                           ", ".join("%s: %s" % (astro.FRAME_TYPES[t]["label"], u)
+                                                     for t, u in res["used"].items() if u)))
+        cli = gallery.siril_cli()
+        if body.get("run"):
+            if not cli:
+                raise CameraError("Siril ist nicht installiert (siril.org) – das Skript liegt bereit: %s"
+                                  % res["script"].replace(os.path.expanduser("~"), "~"))
+            job = {"active": True, "session": body.get("session"), "phase": "startet", "lines": 0, "last": "",
+                   "error": None, "result": None, "started": time.time()}
+            self.gallery_job = job
+            threading.Thread(target=self._run_siril, args=(job, cli, res["folder"]), daemon=True).start()
+        elif body.get("reveal", True):
+            gallery.open_with(OUT, [gallery.rel_of(OUT, res["script"])], reveal=True)
+        return {"siril": dict(res, cli=bool(cli))}
+
+    def _run_siril(self, job, cli, folder):
+        """siril-cli -d <Ordner> -s <Skript>; die Ausgabe zeigt den Fortschritt."""
+        try:
+            with subprocess.Popen([cli, "-d", folder, "-s", os.path.join(folder, gallery.SIRIL_SCRIPT)],
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as p:
+                job["phase"] = "läuft"
+                for line in p.stdout:
+                    line = line.strip()
+                    if line:
+                        job["lines"] += 1
+                        job["last"] = line[-200:]
+                rc = p.wait()
+            results = sorted((n for n in os.listdir(folder) if n.startswith("ergebnis_")),
+                             key=lambda n: os.path.getmtime(os.path.join(folder, n)))
+            if rc != 0:
+                job["error"] = "Siril meldet Fehler (Code %d): %s" % (rc, job["last"])
+            elif not results:
+                job["error"] = "Siril lief durch, aber es gibt kein Ergebnis: %s" % job["last"]
+            else:
+                job["result"] = gallery.rel_of(OUT, os.path.join(folder, results[-1]))
+                job["phase"] = "fertig"
+                self.log("✔︎ Siril: %s" % results[-1])
+        except Exception as e:
+            job["error"] = str(e)
+        finally:
+            job["active"] = False
+            if job["error"]:
+                job["phase"] = "Fehler"
+                self.log("❌ Siril: %s" % job["error"])
+
     def act_library_delete(self, body):
         try:
             entry = self.library.get(body.get("id"))
@@ -1442,6 +1544,7 @@ class Studio:
                 "imaging": imaging.missing(), "library_seq": self.library.seq,
                 "master_job": dict(self.master_job) if self.master_job else None,
                 "last_light": self.last_light, "last_flat": self.last_flat,
+                "gallery_job": dict(self.gallery_job) if self.gallery_job else None,
                 "out": OUT, "log": list(self.logs)[-40:],
             }
 
@@ -1462,6 +1565,9 @@ class Handler(BaseHTTPRequestHandler):
                "/api/live/reset": "act_live_reset", "/api/live/view": "act_live_view",
                "/api/live/save": "act_live_save", "/api/live/folder": "act_live_folder",
                "/api/live/analyze": "act_live_analyze",
+               "/api/gallery/open": "act_gallery_open", "/api/gallery/adopt": "act_gallery_adopt",
+               "/api/gallery/cull": "act_gallery_cull", "/api/gallery/export": "act_gallery_export",
+               "/api/gallery/siril": "act_gallery_siril",
                "/api/library/delete": "act_library_delete", "/api/library/build": "act_library_build"}
 
     def log_message(self, *a):
@@ -1490,6 +1596,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(st.snapshot())
         elif u.path == "/api/library":
             self.send_json(st.library_info())
+        elif u.path == "/api/gallery":
+            self.send_json(st.gallery_info())
+        elif u.path in ("/api/gallery/items", "/api/gallery/thumb"):
+            q = parse_qs(u.query)
+            try:
+                if u.path == "/api/gallery/items":
+                    self.send_json({"items": gallery.items(OUT, q.get("source", [""])[0], q.get("group", [""])[0])})
+                else:
+                    size = min(2400, max(64, int(q.get("size", [gallery.THUMB])[0])))
+                    data, ctype = gallery.thumbnail(OUT, q.get("rel", [""])[0], size)
+                    self.send_bytes(data, ctype)
+            except (ValueError, OSError) as e:
+                self.send_json({"error": str(e)}, 404)
         elif u.path == "/api/live.png":
             live, png, seq = st.live, None, 0
             if live:
@@ -1540,8 +1659,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             n = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(n) or b"{}")
-            getattr(self.studio, method)(body)
-            self.send_json({"ok": True})
+            result = getattr(self.studio, method)(body)
+            self.send_json(dict({"ok": True}, **(result if isinstance(result, dict) else {})))
         except CameraError as e:
             self.send_json({"ok": False, "error": str(e)})
         except Exception as e:

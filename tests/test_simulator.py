@@ -364,6 +364,43 @@ class TestStudioMitSimulator(unittest.TestCase):
             cam.set_mode("B")
             self.assertTrue(wait_for(lambda: st.is_bulb_mode(), 5))
 
+    @unittest.skipUnless(studio.imaging.missing() is None, "braucht numpy und rawpy (venv)")
+    def test_9d_bildverwaltung_export_und_siril(self):
+        st = self.st
+        info = st.gallery_info()
+        sessions = {x["name"]: x for x in info["index"]["sessions"]}
+        name = next(n for n in sessions if n.endswith("_Flats"))        # aus test_9c: Lights, Flats, Dark-Flats
+        self.assertTrue(any(g["key"] == "lights" for g in sessions[name]["groups"]))
+        self.assertIn("light", info["frame_types"])
+        res = st.act_gallery_export({"session": name, "reveal": False})["export"]
+        self.assertEqual(res["counts"]["light"], 2)
+        self.assertTrue(os.path.isfile(os.path.join(res["folder"], "LIESMICH.txt")))
+        siril = st.act_gallery_siril({"session": name, "reveal": False})["siril"]
+        self.assertTrue(os.path.isfile(siril["script"]))
+        with self.assertRaises(studio.CameraError):                     # Siril fehlt: Skript liegt bereit
+            if not siril["cli"]:
+                st.act_gallery_siril({"session": name, "run": True})
+            else:
+                raise studio.CameraError("Siril installiert – Fehlerfall nicht prüfbar")
+        # Ablauf mit siril-cli – hier ein Ersatz, der wie Siril Zeilen ausgibt und ein Ergebnis schreibt
+        fake = os.path.join(tempfile.mkdtemp(), "siril-cli")
+        with open(fake, "w") as f:
+            f.write("#!/bin/sh\necho 'log: Siril 1.4'\necho 'log: Stacking 2 images'\n"
+                    "while [ $# -gt 0 ]; do [ \"$1\" = -d ] && d=$2; shift; done\n"
+                    "echo x > \"$d/ergebnis_2s.fit\"\n")
+        os.chmod(fake, 0o755)
+        job = {"active": True, "session": name, "phase": "", "lines": 0, "last": "", "error": None, "result": None}
+        st._run_siril(job, fake, siril["folder"])
+        self.assertEqual((job["active"], job["error"], job["lines"]), (False, None, 2))
+        self.assertTrue(job["result"].endswith("siril/ergebnis_2s.fit"))
+        groups = {g["key"] for x in st.gallery_info()["index"]["sessions"] if x["name"] == name for g in x["groups"]}
+        self.assertIn("siril", groups)                                   # Ergebnis erscheint in der Verwaltung
+        with open(fake, "w") as f:
+            f.write("#!/bin/sh\necho 'error: no images'\nexit 1\n")
+        job = dict(job, active=True, error=None, result=None, lines=0)
+        st._run_siril(job, fake, siril["folder"])
+        self.assertIn("no images", job["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
