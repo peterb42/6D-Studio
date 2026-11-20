@@ -122,6 +122,8 @@ table.mini td.why{color:var(--muted)}
 .galnav .root{margin:4px 0 2px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);font-weight:700}
 .galnav .root:not(:first-child){margin-top:16px;padding-top:10px;border-top:1px solid var(--line)}
 .flow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:10px}
+.ftools{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:12.5px}
+.ftools .hint{margin:0 0 0 4px}
 .fstep{border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-size:12.5px;display:flex;flex-direction:column;gap:6px}
 .fstep.done{border-color:#2f6b3f}
 .fhead{display:flex;align-items:center;gap:7px;font-size:13.5px}
@@ -1145,6 +1147,7 @@ let GAL = {info: null, root: 'studio', source: null, group: null, items: [], sel
            panel: null, summary: null, jobSeen: null};
 const enc = encodeURIComponent;
 const fmtSize = b => b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${(b / 1e6).toFixed(b >= 1e8 ? 0 : 1)} MB`;
+const fmtDur = s => s >= 60 ? `${Math.floor(s / 60)} min ${String(Math.round(s % 60)).padStart(2, '0')} s` : `${Math.round(s)} s`;
 const FRAME_GROUPS = ['lights', 'darks', 'biases', 'flats', 'darkflats'];
 const galDate = d => d ? d.split('-').reverse().join('.') : '';
 const galThumb = (rel, size) => `/api/gallery/thumb?root=${enc(GAL.root)}&rel=${enc(rel)}&size=${size || 360}`;
@@ -1232,7 +1235,7 @@ function galCaption(it) {
   if (m.iso) parts.push(`ISO ${m.iso}`);
   if (m.exposure) parts.push(fmtExp(m.exposure));
   if (m.n) parts.push(`${m.n}×`);
-  if (it.finished) parts.push('fertig');
+  if (it.finished) parts.push(it.finished_by === 'pixinsight' ? 'fertig (PixInsight)' : 'fertig');
   return parts.join(' · ');
 }
 function galShort(it) {
@@ -1242,9 +1245,11 @@ function galShort(it) {
   if (ls) return `Live-Stack ${ls[4]}× · ${ls[2]}:${ls[3]}`;
   const er = n.match(/^ergebnis_(\d+)s/);
   if (er) return `Siril-Stapel ${fmtExp(+er[1])}`;
+  const wb = n.match(/^wbpp_(\d+)x([\d.]+)s/);
+  if (wb) return `PixInsight-Stapel ${wb[1]}× ${fmtExp(+wb[2])}`;
   return n.length > 22 ? '…' + n.slice(-20) : n;
 }
-function galKinds(it) { return [...new Set(it.files.map(f => f.kind))].map(k => ({raw: 'RAW', jpeg: 'JPG', fits: 'FITS', png: 'PNG', tiff: 'TIFF'}[k] || k)).join('+'); }
+function galKinds(it) { return [...new Set(it.files.map(f => f.kind))].map(k => ({raw: 'RAW', jpeg: 'JPG', fits: 'FITS', xisf: 'XISF', png: 'PNG', tiff: 'TIFF'}[k] || k)).join('+'); }
 function renderGalItems() {
   const src = galCur(), grp = src && src.groups.find(g => g.key === GAL.group);
   $('#galTitle').textContent = src ? `${src.title}${grp && grp.label !== src.title ? ' · ' + grp.label : ''}` : 'Bilder';
@@ -1284,7 +1289,17 @@ function galFileFor(it, kinds) {                        // erste Datei des Bilds
   const f = it.files.find(x => kinds.includes(x.kind));
   return f ? f.rel : null;
 }
-const galStackable = it => it.kind === 'fits' && !it.finished && !/\/Bibliothek\//.test(it.id);
+const galStackable = it => ['fits', 'xisf'].includes(it.kind) && !it.finished && !/\/Bibliothek\//.test(it.id);
+// Programm für Stapeln und Fertig entwickeln: PixInsight oder Siril, was installiert ist – die Wahl bleibt im Browser
+const TOOL_NAME = {pixinsight: 'PixInsight', siril: 'Siril'};
+const galTools = () => GAL.info ? ['pixinsight', 'siril'].filter(t => GAL.info[t]) : [];
+function galTool() {
+  const have = galTools(), want = store.get('galTool', 'pixinsight');
+  return have.includes(want) ? want : have[0] || null;
+}
+const FINISH_TEXT = {
+  pixinsight: 'GradientCorrection, Hintergrund neutralisieren, Farbkalibrierung, MultiscaleAdaptiveStretch, Grünstich weg – als JPEG und 16-Bit-TIFF neben dem Stapel (PixInsight ohne Oberfläche).',
+  siril: 'Hintergrund und Gradient entfernen, Grünstich weg, strecken – als JPEG und 16-Bit-TIFF neben dem Stapel.'};
 function renderGalBar() {
   const picked = galPicked(), src = GAL.source || '', session = src.startsWith('s:');
   const tools = GAL.info ? GAL.info.tools : [];
@@ -1300,11 +1315,12 @@ function renderGalBar() {
   $('#galAdopt').hidden = !src.startsWith('n:');
   $('#galAdopt').disabled = !picked.length;
   $('#galAdoptRow').hidden = GAL.panel !== 'adopt' || !src.startsWith('n:');
-  const fin = picked.length === 1 && galStackable(picked[0]);
+  const fin = picked.length === 1 && galStackable(picked[0]), tool = galTool();
   $('#galFinish').hidden = !GAL.items.some(galStackable);
-  $('#galFinish').disabled = !fin || !(GAL.info && GAL.info.siril) || galJobRunning();
-  $('#galFinish').title = !(GAL.info && GAL.info.siril) ? 'Siril ist nicht installiert (siril.org)'
-    : fin ? 'Mit Siril: Hintergrund entfernen, Grünstich weg, strecken – als JPEG und TIFF' : 'Ein gestapeltes Bild (FITS) auswählen';
+  $('#galFinish').disabled = !fin || !tool || galJobRunning();
+  $('#galFinish').textContent = tool ? `Mit ${TOOL_NAME[tool]} entwickeln` : 'Fertig entwickeln';
+  $('#galFinish').title = !tool ? 'Weder PixInsight noch Siril installiert (Siril ist kostenlos: siril.org)'
+    : fin ? FINISH_TEXT[tool] : 'Ein gestapeltes Bild (FITS oder XISF) auswählen';
   $('#galAll').textContent = GAL.sel.size && GAL.sel.size === GAL.items.length ? 'Keine' : 'Alle';
   if (GAL.info) {
     const names = tools.map(t => t.name).join(', ');
@@ -1323,7 +1339,8 @@ function renderGalFlow() {
   const box = $('#galFlow'), sm = GAL.summary;
   box.hidden = !sm;
   if (!sm) return;
-  const c = sm.calib, siril = GAL.info && GAL.info.siril, busy = galJobRunning();
+  const c = sm.calib, tool = galTool(), busy = galJobRunning();
+  const canStack = tool === 'pixinsight' ? !!GAL.info.wbpp : tool === 'siril';
   const cal = (label, x) => x.n ? `${label} ${x.n}${x.from ? ` (aus ${x.from})` : ''}` : x.master ? `${label}: Master` : `${label} –`;
   const skipped = Object.entries(c).filter(([, x]) => x.skipped).map(([t, x]) => `${x.skipped} ${GAL.info.frame_types[t]}`);
   const ck = sm.check;
@@ -1336,29 +1353,43 @@ function renderGalFlow() {
       + (!odd ? ' · <span class="ok">alles passt ✓</span>' : '') + '</div>';
   }
   const odd = ck && !ck.stale ? ck.suggest.length : 0;
-  const est = Math.round((sm.lights_raw * 2.6 + (c.bias.n + c.dark.n + c.flat.n + c.darkflat.n) * 0.4) / 60) || 1;
+  const ncal = c.bias.n + c.dark.n + c.flat.n + c.darkflat.n;     // Sekunden: Siril 1.4 bzw. WBPP 3.1 auf einem M1
+  const est = Math.round((tool === 'pixinsight' ? 20 + sm.lights_raw * 10 + ncal * 0.8 : sm.lights_raw * 2.6 + ncal * 0.4) / 60) || 1;
   const calText = [c.dark.n || c.dark.master ? 'Darks' : '', c.bias.n || c.bias.master ? 'Bias' : '', c.flat.n || c.flat.master ? 'Flats' : '',
     c.darkflat.n ? 'Dark-Flats' : ''].filter(Boolean).join(', ') || 'Schwarzwert';
+  const piMaster = tool === 'pixinsight' && ['dark', 'bias', 'flat'].some(t => !c[t].n && c[t].master);
+  const name = TOOL_NAME[tool] || '';
   const res = sm.results.map(r => `<div class="fitem"><img src="${galThumb(r.finished_jpg || r.preview, 200)}" data-big="${esc(r.finished_jpg || r.preview)}" alt="">`
-    + `<div><b>${esc(galShort(r))}</b> <span class="hint">${esc((r.meta.time || '').slice(0, 16))}</span>${r.finished_jpg ? ' <span class="ok">fertig ✓</span>' : ''}</div>`
-    + `<div class="row"><button class="btn${r.finished_jpg ? '' : ' primary'}" data-a="finish" data-rel="${esc(r.id)}"${siril && !busy ? '' : ' disabled'}>${r.finished_jpg ? 'Neu entwickeln' : 'Fertig entwickeln'}</button>`
+    + `<div><b>${esc(galShort(r))}</b> <span class="hint">${esc((r.meta.time || '').slice(0, 16))}</span>`
+    + (r.finished_jpg ? ` <span class="ok">fertig ✓${r.finished_by.length ? ' ' + r.finished_by.map(t => TOOL_NAME[t]).join(', ') : ''}</span>` : '') + '</div>'
+    + `<div class="row"><button class="btn${r.finished_jpg ? '' : ' primary'}" data-a="finish" data-rel="${esc(r.id)}"${tool && !busy ? '' : ' disabled'}>${r.finished_jpg ? 'Neu entwickeln' : 'Fertig entwickeln'}</button>`
     + (r.finished_jpg ? `<button class="btn" data-a="view" data-rel="${esc(r.finished_jpg)}">Ansehen</button>` : '')
-    + `<button class="btn" data-a="open" data-rel="${esc(r.id)}" title="Gestapeltes Bild (FITS) in Siril oder PixInsight öffnen">Öffnen …</button></div></div>`).join('');
+    + `<button class="btn" data-a="open" data-rel="${esc(r.id)}" title="Gestapeltes Bild in ${esc(name || 'einem Programm')} öffnen – zum Weiterbearbeiten von Hand">Öffnen …</button></div></div>`).join('');
+  const tools = galTools();
   box.innerHTML =
-    `<div class="fstep${ck && !ck.stale && !odd ? ' done' : ''}"><div class="fhead"><span class="fnum">1</span><b>Prüfen</b></div>`
+    `<div class="ftools"><span class="lbl">Nachbearbeiten mit</span>`
+    + (tools.length ? tools.map(t => `<button class="btn${t === tool ? ' on' : ''}" data-a="tool" data-tool="${t}">${TOOL_NAME[t]}</button>`).join('')
+                    : '<span class="warn">weder PixInsight noch Siril installiert – Siril ist kostenlos (siril.org)</span>')
+    + (tools.length === 1 ? `<span class="hint">${tool === 'siril' ? 'PixInsight nicht gefunden' : 'Siril nicht gefunden (kostenlos, siril.org)'}</span>` : '')
+    + '</div>'
+    + `<div class="fstep${ck && !ck.stale && !odd ? ' done' : ''}"><div class="fhead"><span class="fnum">1</span><b>Prüfen</b></div>`
     + `<div>${sm.lights} Lights · ${cal('Darks', c.dark)} · ${cal('Bias', c.bias)} · ${cal('Flats', c.flat)}${c.darkflat.n ? ' · ' + cal('Dark-Flats', c.darkflat) : ''}`
     + (skipped.length ? `<div class="hint">nicht passend, bleiben draußen: ${skipped.join(', ')}</div>` : '') + '</div>'
     + (sm.hints.length ? `<ul>${sm.hints.map(h => `<li>${esc(h)}</li>`).join('')}</ul>` : '') + check
     + `<div class="row"><button class="btn${ck ? '' : ' primary'}" data-a="check"${busy ? ' disabled' : ''}>${ck ? 'Neu prüfen' : 'Lights prüfen'}</button>`
     + (odd ? `<button class="btn primary" data-a="cull">${odd} aussortieren</button><button class="btn" data-a="showodd">zeigen</button>` : '') + '</div></div>'
-    + `<div class="fstep${sm.results.some(r => /^ergebnis_/.test(r.name)) ? ' done' : ''}"><div class="fhead"><span class="fnum">2</span><b>Stapeln</b></div>`
-    + `<div class="hint">${siril ? `Siril kalibriert mit ${calText}, debayert, richtet aus und stapelt ${sm.lights_raw} RAW-Lights (≈ ${est} min). Die Zwischenbilder werden danach gelöscht.`
-                                 : 'Siril ist nicht installiert (kostenlos, siril.org) – oder für PixInsight vorbereiten.'}</div>`
-    + `<div class="row"><button class="btn primary" data-a="stack"${siril && sm.lights_raw && !busy ? '' : ' disabled'}>Mit Siril stapeln</button>`
-    + `<button class="btn" data-a="pi" title="Ordner für WBPP: Light/Dark/Flat/Bias als Verknüpfungen, Listen, bilder.csv">Für PixInsight</button>`
-    + `<button class="btn" data-a="script" title="Arbeitsordner mit Skript, zum Ausführen in Siril selbst">Nur Skript</button></div></div>`
+    + `<div class="fstep${sm.results.some(r => /^(ergebnis|wbpp)_/.test(r.name)) ? ' done' : ''}"><div class="fhead"><span class="fnum">2</span><b>Stapeln</b></div>`
+    + `<div class="hint">${tool === 'pixinsight' ? (GAL.info.wbpp
+        ? `WBPP kalibriert mit ${calText}, debayert, bewertet und gewichtet die Lights, richtet aus, normalisiert lokal und stapelt ${sm.lights_raw} RAW-Lights (≈ ${est} min, PixInsight ohne Oberfläche). Die Zwischenbilder werden danach gelöscht.`
+          + (piMaster ? ' Masters der Bibliothek nimmt WBPP nicht (nur XISF) – dafür die Rohbilder dazu, wenn es sie noch gibt.' : '')
+        : 'WBPP nicht gefunden – PixInsight 1.9.6 oder neuer nötig.')
+      : tool === 'siril' ? `Siril kalibriert mit ${calText}, debayert, richtet aus und stapelt ${sm.lights_raw} RAW-Lights (≈ ${est} min). Die Zwischenbilder werden danach gelöscht.`
+      : 'Ohne PixInsight oder Siril: die Ordner für WBPP oder das Siril-Skript anlegen und dort von Hand starten.'}</div>`
+    + `<div class="row">${tool ? `<button class="btn primary" data-a="stack"${canStack && sm.lights_raw && !busy ? '' : ' disabled'}>Mit ${name} stapeln</button>` : ''}`
+    + `<button class="btn" data-a="pi" title="Nur die Ordner für WBPP anlegen: Light/Dark/Flat/Bias als Verknüpfungen, Listen, bilder.csv – zum Starten in PixInsight von Hand">Ordner für WBPP</button>`
+    + `<button class="btn" data-a="script" title="Arbeitsordner mit Skript, zum Ausführen in Siril selbst">Siril-Skript</button></div></div>`
     + `<div class="fstep${sm.results.some(r => r.finished_jpg) ? ' done' : ''}"><div class="fhead"><span class="fnum">3</span><b>Fertig entwickeln</b></div>`
-    + (res ? `<div class="hint">Hintergrund und Gradient entfernen, Grünstich weg, strecken – als JPEG und 16-Bit-TIFF neben dem Stapel.</div><div class="fres">${res}</div>`
+    + (res ? `<div class="hint">${tool ? FINISH_TEXT[tool] : 'Weder PixInsight noch Siril installiert.'}</div><div class="fres">${res}</div>`
            : '<div class="hint">Noch kein gestapeltes Bild – zuerst stapeln (Schritt 2) oder einen Live-Stack speichern.</div>') + '</div>';
 }
 $('#galFlow').addEventListener('click', async e => {
@@ -1367,7 +1398,8 @@ $('#galFlow').addEventListener('click', async e => {
   const b = e.target.closest('button[data-a]');
   if (!b || b.disabled) return;
   const sm = GAL.summary, a = b.dataset.a;
-  if (a === 'check') { if (await apiJson('/api/gallery/check', {session: sm.session})) GAL.jobSeen = null; }
+  if (a === 'tool') { store.set('galTool', b.dataset.tool); renderGalFlow(); renderGalBar(); }
+  else if (a === 'check') { if (await apiJson('/api/gallery/check', {session: sm.session})) GAL.jobSeen = null; }
   else if (a === 'cull') {
     const rels = sm.check.suggest;
     if (confirm(`${rels.length} auffällige Lights nach „verworfen“ verschieben? (Zurücklegen geht in der Gruppe „Aussortiert“.)`)
@@ -1378,12 +1410,12 @@ $('#galFlow').addEventListener('click', async e => {
     GAL.sel = new Set(sm.check.suggest.filter(r => GAL.items.some(i => i.id === r))); renderGalItems();
     toast('Die auffälligen Lights sind ausgewählt');
   }
-  else if (a === 'stack') apiJson('/api/gallery/stack', {session: sm.session});
+  else if (a === 'stack') { if (await apiJson('/api/gallery/stack', {session: sm.session, tool: galTool()})) GAL.jobSeen = null; }
   else if (a === 'pi') {
     const j = await apiJson('/api/gallery/export', {session: sm.session});
     if (j) {
       const names = GAL.info.frame_types, e2 = j.export;
-      toast(`PixInsight-Ordner angelegt: ${Object.entries(e2.counts).map(([t, n]) => `${n} ${names[t]}`).join(', ')}. In WBPP: „+ Directory“ → pixinsight`);
+      toast(`PixInsight-Ordner angelegt: ${Object.entries(e2.counts).map(([t, n]) => `${n} ${names[t]}`).join(', ')}. In WBPP: „+ Directory“ → pixinsight/Rohbilder`);
       loadGallery(true);
     }
   }
@@ -1394,13 +1426,13 @@ $('#galFlow').addEventListener('click', async e => {
   else if (a === 'finish') galFinish(b.dataset.rel);
   else if (a === 'view') galView(b.dataset.rel, '');
   else if (a === 'open') {
-    const t = GAL.info.tools.find(x => x.id === 'siril') || GAL.info.tools.find(x => x.id === 'pixinsight');
+    const t = GAL.info.tools.find(x => x.id === galTool()) || GAL.info.tools.find(x => ['pixinsight', 'siril'].includes(x.id));
     if (t) apiJson('/api/gallery/open', {rels: [b.dataset.rel], tool: t.id}).then(j => j && toast(`→ ${t.name}`));
     else apiJson('/api/gallery/open', {rels: [b.dataset.rel], reveal: true});
   }
 });
-async function galFinish(rel) {
-  if (await apiJson('/api/gallery/finish', {rel})) GAL.jobSeen = null;
+async function galFinish(rel, tool) {
+  if (await apiJson('/api/gallery/finish', {rel, tool: tool || galTool()})) GAL.jobSeen = null;
 }
 function galView(rel, cap) {
   $('#galViewerImg').src = galThumb(rel, 1600);
@@ -1428,8 +1460,10 @@ function renderGalJob() {                               // laufender oder zuletz
   else box.innerHTML = `<b>✔︎ ${esc(j.label)}</b>${where}`
     + (j.check ? ` – ${j.check.main} im Hauptfeld, ${j.check.suggest} auffällig` : '')
     + (j.result ? ` – ${esc(j.result.split('/').pop())}` : '') + (j.freed ? ` · ${fmtSize(j.freed)} Zwischenbilder gelöscht` : '')
-    + (j.kind === 'stack' && j.result ? ` <button class="btn primary" data-a="finish" data-rel="${esc(j.result)}">Fertig entwickeln</button>` : '')
-    + (j.kind === 'finish' && j.result ? ` <button class="btn" data-a="view" data-rel="${esc(j.result)}">Ansehen</button>` : '');
+    + (j.started && j.finished ? ` · ${fmtDur(j.finished - j.started)}` : '')
+    + (j.kind === 'stack' && j.result ? ` <button class="btn primary" data-a="finish" data-rel="${esc(j.result)}" data-tool="${esc(j.tool || '')}">Mit ${esc(TOOL_NAME[j.tool] || '…')} entwickeln</button>` : '')
+    + (j.kind === 'finish' && j.result ? ` <button class="btn" data-a="view" data-rel="${esc(j.result)}">Ansehen</button>` : '')
+    + (j.warnings && j.warnings.length ? `<div class="hint"><span class="warn">⚠︎ ${esc(j.warnings.join(' · '))}</span></div>` : '');
   renderGalBar();
   const sm = GAL.summary;
   if (sm && !j.active) renderGalFlow();
@@ -1437,7 +1471,7 @@ function renderGalJob() {                               // laufender oder zuletz
 $('#galJob').addEventListener('click', e => {
   const b = e.target.closest('button[data-a]');
   if (!b) return;
-  if (b.dataset.a === 'finish') galFinish(b.dataset.rel);
+  if (b.dataset.a === 'finish') galFinish(b.dataset.rel, b.dataset.tool);
   else galView(b.dataset.rel, 'Fertig entwickelt');
 });
 

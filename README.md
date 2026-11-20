@@ -9,7 +9,7 @@ des Sternenhimmels:
 - **Kalibrier-Bibliothek** (Bias, Darks, Flats, Dark-Flats) mit geführter Aufnahme und automatischer Auswahl
   passender Masters
 - **Bildverwaltung** für Sitzungen, Einzelaufnahmen und Live-Stacks: ansehen, aussortieren, übernehmen, in
-  installierten Programmen öffnen, **Ordner für PixInsight (WBPP)** und **Siril-Vorverarbeitung** auf Knopfdruck
+  installierten Programmen öffnen; **stapeln und fertig entwickeln mit PixInsight (WBPP) oder Siril** auf Knopfdruck
 
 ```
  Browser ──HTTP :8066──┐
@@ -237,46 +237,59 @@ Master.
 
 **Anzeige: Bilder** (<kbd>B</kbd>). Links die Quellen, und zwar immer für die Kamera- **und** die
 Simulator-Ablage (die des laufenden Studios zuerst):
-- **Ergebnisse** – alle Live-Stacks und Siril-Ergebnisse, auch fertig entwickelte, neueste zuerst;
-- **Sitzungen** mit Lights, Darks, Bias, Flats, Dark-Flats, Live-Stack, Siril-Ergebnissen und Aussortierten;
+- **Ergebnisse** – alle Live-Stacks, Siril- und PixInsight-Ergebnisse, auch fertig entwickelte, neueste zuerst;
+- **Sitzungen** mit Lights, Darks, Bias, Flats, Dark-Flats, Live-Stack, Siril- und PixInsight-Ergebnissen und
+  Aussortierten;
 - **Einzelaufnahmen** aus dem normalen Kamerabetrieb (Auslösen, Bulb), je Nacht;
 - die **Kalibrier-Bibliothek**.
 
-Rechts die Bilder als Vorschau. RAW und JPEG gleichen Namens sind ein Eintrag, ebenso FITS und PNG eines
-Live-Stacks. Klick wählt aus (Shift: Bereich, „Alle“), Doppelklick zeigt groß. Darunter stehen die Aufnahmedaten:
+Rechts die Bilder als Vorschau – auch FITS und XISF (z. B. die Masters von WBPP). RAW und JPEG gleichen Namens
+sind ein Eintrag, ebenso FITS und PNG eines Live-Stacks. Klick wählt aus (Shift: Bereich, „Alle“), Doppelklick zeigt groß. Darunter stehen die Aufnahmedaten:
 Zeit, ISO, Belichtung, Sensortemperatur, Brennweite, Blende, Objektiv, Dateien.
 
-**Nachbearbeitung einer Sitzung** – oben, in drei Schritten (✓ zeigt, was erledigt ist):
+**Nachbearbeitung einer Sitzung** – oben, in drei Schritten (✓ zeigt, was erledigt ist). Darüber
+**Nachbearbeiten mit PixInsight | Siril**: das Programm für Stapeln und Fertig entwickeln (nur installierte; die
+Wahl merkt sich der Browser).
 
 1. **Prüfen**
    - Zeigt, wie viele Lights es gibt, welche Kalibrierbilder passen und was fehlt.
    - **Lights prüfen** (~0,5 s je Light) findet Lights mit anderem Bildausschnitt, Wolken, unscharfen Sternen oder
      hellem Himmel. **N aussortieren** legt sie nach `verworfen/`.
-2. **Stapeln**
-   - **Mit Siril stapeln** (kalibrieren, debayern, ausrichten, stapeln) läuft im Hintergrund, mit Schritt und
-     Prozent.
-   - Danach löscht das Studio die Zwischenbilder (bei 69 Lights rund 40 GB).
-   - Oder **Für PixInsight** bzw. **Nur Skript**.
-3. **Fertig entwickeln** – für jeden Stapel der Sitzung (Siril oder Live-Stack). Siril entfernt Hintergrund und
-   Gradient, den Grünstich und streckt. JPEG und 16-Bit-TIFF landen als `<Stapel>_fertig` daneben, das Bild öffnet
-   sich gleich groß. **Öffnen …** gibt den Stapel an Siril oder PixInsight.
+2. **Stapeln** – läuft im Hintergrund, mit Schritt und Fortschritt; danach löscht das Studio die Zwischenbilder.
+   - **Mit PixInsight stapeln:** WBPP ohne Oberfläche – kalibrieren, debayern, bewerten und gewichten,
+     ausrichten, lokal normalisieren, stapeln, Ränder beschneiden. Ergebnis `pixinsight/wbpp_<n>x<Zeit>s.xisf`.
+     Etwa 10 s je Light auf einem M1; bei 12 Lights 7,8 GB Zwischenbilder.
+   - **Mit Siril stapeln:** kalibrieren, debayern, ausrichten, stapeln; etwa 2,6 s je Light, bei 69 Lights rund
+     40 GB Zwischenbilder.
+   - Oder nur **Ordner für WBPP** bzw. **Siril-Skript**, zum Starten von Hand.
+3. **Fertig entwickeln** – für jeden Stapel der Sitzung (PixInsight, Siril oder Live-Stack, FITS oder XISF):
+   - **PixInsight:** GradientCorrection, Hintergrund neutralisieren, Farbkalibrierung, MultiscaleAdaptiveStretch,
+     Grünstich weg → `<Stapel>_fertig-pi.jpg` und `.tif` (16 Bit), etwa 20 s;
+   - **Siril:** Hintergrund und Gradient, Grünstich, strecken → `<Stapel>_fertig.jpg` und `.tif`, etwa 4 s.
+
+   Das Bild öffnet sich gleich groß; beim Stapel steht, womit er fertig ist. **Öffnen …** gibt den Stapel an das
+   gewählte Programm.
 
 | Aktion der Leiste | Funktion |
 |---|---|
-| **Fertig entwickeln** | ein gestapeltes FITS auswählen (z. B. in „Ergebnisse“) – wie Schritt 3 |
+| **Mit PixInsight / Siril entwickeln** | ein gestapeltes FITS oder XISF auswählen (z. B. in „Ergebnisse“) – wie Schritt 3 |
 | **Öffnen mit …** | in einem installierten Programm – PixInsight, Siril, GraXpert, Starry Landscape Stacker, Astro Pixel Processor, StarTools, Affinity Photo, Photoshop, Lightroom, darktable, Vorschau. Angeboten wird nur, was die Dateien lesen kann; bei RAW+JPEG bekommt z. B. Starry Landscape Stacker das JPEG. |
 | **Finder** | Datei im Finder zeigen |
 | **Aussortieren / Zurücklegen** | nach `<Sitzung>/verworfen/<Ordner>/` und zurück (RAW und JPEG zusammen) – Export und Siril lassen sie weg, gelöscht wird nichts |
 | **In Sitzung übernehmen …** | Einzelaufnahmen als Lights (oder Kalibrierbilder) in eine Sitzung verschieben. Sie werden nach der Namenskonvention benannt (Zeit, ISO, Belichtung, Blende aus dem EXIF) und in `serie.csv` eingetragen; die Nummern laufen mit den Serien fort. |
 
 **Für PixInsight (WBPP):** `<Sitzung>/pixinsight/` mit
-- `Light/`, `Dark/`, `Flat/`, `Bias/`: harte Verknüpfungen auf die Rohbilder, also kein zusätzlicher Platz;
-- `lights.txt` usw. mit den Originalpfaden;
-- `bilder.csv` mit allen Aufnahmedaten;
+- `Rohbilder/` – `Light/`, `Dark/`, `Flat/`, `Bias/`: harte Verknüpfungen auf die Rohbilder, also kein
+  zusätzlicher Platz; dazu `lights.txt` usw. mit den Originalpfaden und `bilder.csv` mit allen Aufnahmedaten;
+- `wbpp/` – Arbeitsordner, wenn das Studio WBPP startet: `master/` (Masters als XISF), `logs/` (Protokolle);
+- `wbpp_*.xisf` – Ergebnisse, `*_fertig-pi.*` mit PixInsight fertig entwickelt;
 - `LIESMICH.txt`.
 
-In WBPP: **+ Directory** → `pixinsight`. Den Bildtyp erkennt WBPP am Dateinamen; der Typ steht als letztes Wort,
-denn so liest WBPP ihn (nachgelesen im WBPP-Quelltext von PixInsight 1.9.6). Dark-Flats liegen bei den Darks.
+Von Hand in WBPP: **+ Directory** → `pixinsight/Rohbilder`. Den Bildtyp erkennt WBPP am Dateinamen; der Typ steht
+als letztes Wort, denn so liest WBPP ihn (nachgelesen im WBPP-Quelltext von PixInsight 1.9.6). Dark-Flats liegen
+bei den Darks. Das Studio startet WBPP selbst im Automatikbetrieb (`PixInsight -n --automation-mode -r=WBPP.js,…`);
+den Fortschritt meldet ein Ereignisskript (`studio/pixinsight/`). Die Einstellungen der WBPP-Oberfläche gelten
+dabei nicht, sondern die Voreinstellungen von WBPP; die Astrometrie ist aus (sie bräuchte die Gaia-Datenbank).
 
 Mit gehen nur passende Kalibrierbilder, der Rest wird in `LIESMICH.txt` genannt:
 - Bias und Darks mit der ISO der Lights, Darks auch mit ihrer Zeit;
@@ -294,8 +307,9 @@ verknüpft) und `vorverarbeitung.ssf`, nach Sirils `OSC_Preprocessing` aus Siril
 - Ganz ohne Bias und Dark dient der Schwarzwert als Offset.
 - Aufruf ohne Studio: `siril-cli -d <Sitzung>/siril -s vorverarbeitung.ssf`.
 
-Geprüft mit Siril 1.4.5. FITS schreibt das Studio wie Siril von unten nach oben, ältere dreht es vor der Benutzung
-um. Siehe [docs/nachbearbeitung.md](docs/nachbearbeitung.md).
+Geprüft mit Siril 1.4.5 und PixInsight 1.9.6 (WBPP 3.1.2) mit echten Lights. FITS schreibt das Studio wie Siril
+von unten nach oben, ältere dreht es vor der Benutzung um; PixInsight beachtet die Angabe im FITS-Kopf, und
+Siril 1.4 liest auch XISF. Siehe [docs/nachbearbeitung.md](docs/nachbearbeitung.md).
 
 Unter der Leiste steht, welche Programme gefunden wurden und welche freien fehlen. Die Recherche zu den Programmen
 und Formaten steht in [docs/nachbearbeitung.md](docs/nachbearbeitung.md).
@@ -330,7 +344,7 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 | `~/Pictures/6D-Tethering/` | Einzelbilder (`IMG_xxxx.CR2/.JPG`), Vorschauen in `.vorschau/` (Bildverwaltung: `.vorschau/thumbs/`) |
 | `…/Astro/<Nacht>_<Objekt>/` | Serien (`lights/`, `darks/`, `biases/`, `flats/`, `darkflats/`), `serie.csv`, `livestack/` |
 | `…/Astro/<Nacht>_<Objekt>/verworfen/` | aussortierte Bilder, je Ordner |
-| `…/Astro/<Nacht>_<Objekt>/pixinsight/` | Ordner für WBPP (Verknüpfungen, Listen, `bilder.csv`) |
+| `…/Astro/<Nacht>_<Objekt>/pixinsight/` | `Rohbilder/` für WBPP (Verknüpfungen, Listen, `bilder.csv`), `wbpp/` (Masters, Protokolle), Ergebnisse `wbpp_*.xisf` |
 | `…/Astro/<Nacht>_<Objekt>/siril/` | Siril-Arbeitsordner mit Skript und Ergebnissen |
 | `…/Astro/Bibliothek/` | Masters: Bias, Darks, Flats, Dark-Flats (FITS) |
 | `…/Simulator/` | Fotos des Simulators |
@@ -355,6 +369,18 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 | `sim [optionen]`, `sim-cmd <befehl>`, `sim-stop` | Simulierte 6D – siehe [Simulator](#ohne-kamera-der-simulator) |
 
 ## Änderungen
+
+**20.11.2026**
+- **PixInsight** in der Bildverwaltung: Programmwahl „Nachbearbeiten mit PixInsight | Siril“.
+  - **Mit PixInsight stapeln:** WBPP ohne Oberfläche, Fortschritt mit den Schritten von WBPP, Master-Light als
+    `pixinsight/wbpp_<n>x<Zeit>s.xisf`, Zwischenbilder werden gelöscht.
+  - **Fertig entwickeln mit PixInsight:** GradientCorrection, BackgroundNeutralization, ColorCalibration,
+    MultiscaleAdaptiveStretch, SCNR → JPEG und 16-Bit-TIFF (`studio/pixinsight/6d-fertig.js`).
+  - Siril entwickelt jetzt auch XISF fertig.
+- **XISF** in der Bildverwaltung: Vorschau und Aufnahmedaten (eigener Leser, `imaging.read_xisf`).
+- Der Ordner für WBPP heißt jetzt `pixinsight/Rohbilder/`; ein neuer Export lässt Ergebnisse und `wbpp/` stehen.
+- „Fertig“ zählt nur, was der Lauf eben geschrieben hat – ein älteres fertiges Bild gleichen Namens täuscht keinen
+  Erfolg mehr vor.
 
 **19.11.2026**
 - **Nachbearbeitung** in der Bildverwaltung als Ablauf: Prüfen (Lights mit anderem Ausschnitt, Wolken, Unschärfe
@@ -407,9 +433,9 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 - **Live-Stack:** Der Live-Stack mittelt nur (außer „Satelliten entfernen“) – für das Endbild die RAWs in Siril
   stapeln. Der Vordergrund verschmiert, weil auf die Sterne ausgerichtet wird.
 - **Uhrzeit:** Datum und Uhrzeit der Masters kommen aus der Kamera – ihre Uhr sollte stimmen.
-- **Bildverwaltung:** Der PixInsight-Ordner ist gegen die Typ-Erkennung aus dem WBPP-Quelltext geprüft, aber
-  noch nicht in WBPP gelaufen. GraXpert ist nur über „Öffnen mit“ angebunden. Siril (1.4.5) ist mit echten Lights
-  geprüft.
+- **Bildverwaltung:** PixInsight (1.9.6) und Siril (1.4.5) sind mit echten Lights geprüft. SPCC und Astrometrie
+  brauchen die Gaia-Datenbank von PixInsight, MLDenoise eine Modelldatei – beides ist noch nicht im Ablauf. Ein
+  laufender Auftrag lässt sich nicht abbrechen. GraXpert ist nur über „Öffnen mit“ angebunden.
 
 ## Projekt
 
@@ -420,16 +446,17 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 | `studio/astro.py` | Serien für Stacking: Bildtypen, Namenskonvention, `serie.csv` |
 | `studio/livestack.py` | Live-Stack: Kalibrierung mit Dark-Optimierung, Sterne finden, Ausrichten (Dreiecke + Homographie), Mitteln, Anzeige |
 | `studio/analysis.py` | Bildanalyse des Stapels: Kalibrierung, Rauschgewinn, Hintergrund, Sterne – mit Empfehlungen |
-| `studio/gallery.py` | Bildverwaltung: Übersicht, Vorschaubilder, Aussortieren, Übernehmen, Ordner für PixInsight (WBPP) und Siril, Programme finden und öffnen |
+| `studio/gallery.py` | Bildverwaltung: Übersicht, Vorschaubilder, Aussortieren, Übernehmen, Ordner und Aufträge für PixInsight (WBPP) und Siril, Programme finden und öffnen |
+| `studio/pixinsight/` | Skripte für PixInsight ohne Oberfläche: Ereignisskript für WBPP (Fortschritt), Fertig entwickeln |
 | `studio/calib.py` | Kalibrier-Bibliothek: Master-Bias, -Darks, -Flats, -Dark-Flats als FITS, automatische Auswahl (auch nach Optik), Master aus RAWs (κσ-Clipping) |
-| `studio/imaging.py` | RAW (rawpy), JPEG, FITS, PNG; EXIF inkl. Sensortemperatur der 6D |
+| `studio/imaging.py` | RAW (rawpy), JPEG, FITS, XISF (lesen), PNG; EXIF inkl. Sensortemperatur der 6D |
 | `bin/6d-fernsteuerung` | Kommandozeilen-Werkzeug (zsh) – startet/stoppt das Studio, gphoto2-Befehle |
 | `sim/sim6d.py` | **Simulierte 6D** – PTP/IP wie die echte Kamera, Sternenhimmel-Livebild, Bulb, Download, RAWs |
 | `tools/ptpip-handshake.py` | Anmeldung/Kopplung direkt an der Kamera testen (90 s Wartezeit) |
 | `tools/ptp-caps.py` | Unterstützte Befehle und Eigenschaften auslesen (über das laufende Studio) |
 | `tools/ptp-probe.py` | Einzelne PTP-Befehle über das Studio schicken |
 | `tools/legacy/` | Erster Vermittler, ersetzt durch `6d-studio` |
-| `tests/` | Tests ohne Kamera, auch Studio ↔ Simulator (`.venv/bin/python -m unittest discover -s tests`, ~50 s) |
+| `tests/` | Tests ohne Kamera, auch Studio ↔ Simulator (`.venv/bin/python -m unittest discover -s tests`, ~2 min) |
 | `docs/canon-6d-ptpip.md` | **Alles, was wir über das Protokoll der 6D herausgefunden haben** |
 | `docs/stacking-und-kalibrierung.md` | Serien, Namenskonvention, Ablauf einer Nacht, Live-Stack, Bildanalyse, Bibliothek |
 | `docs/nachbearbeitung.md` | Recherche: Programme zur Nachbearbeitung, was PixInsight (WBPP) und Siril erwarten; die Bildverwaltung |

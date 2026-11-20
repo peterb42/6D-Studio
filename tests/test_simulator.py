@@ -6,6 +6,7 @@ Dauer ~15 s.  Ausführen:  python3 -m unittest tests.test_simulator -v
 """
 import importlib.util
 import os
+import shutil
 import socket
 import struct
 import sys
@@ -443,6 +444,103 @@ class TestStudioMitSimulator(unittest.TestCase):
             self.assertIn("keine Bilder", st.gallery_job["error"])
         finally:
             studio.gallery.siril_cli = real
+
+    @unittest.skipUnless(studio.imaging.missing() is None, "braucht numpy und rawpy (venv)")
+    def test_9e_bildverwaltung_mit_pixinsight(self):
+        """Stapeln mit WBPP und Fertig entwickeln mit PixInsight – PixInsight als Ersatzprogramm, das die
+        Ereigniszeilen der Skripte aus studio/pixinsight/ ausgibt und Dateien wie WBPP 3.1 hinterlässt (das echte
+        PixInsight: von Hand, siehe docs/nachbearbeitung.md)."""
+        st = self.st
+        sessions = [x["name"] for x in st.gallery_info()["roots"][0]["index"]["sessions"]]
+        name = next(n for n in sessions if n.endswith("_Flats"))        # aus test_9c: 2 Lights, Flats, Dark-Flats
+        root = tempfile.mkdtemp()
+        exe = os.path.join(root, "PixInsight", "PixInsight.app", "Contents", "MacOS", "PixInsight")
+        wbpp_js = os.path.join(root, "PixInsight", "src", "scripts", "BatchPreprocessing", "WBPP.js")
+        for p in (exe, wbpp_js):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(wbpp_js, "w").close()
+        group = "Light frames, 5472x3648, NoFilter, CFA, 1x1, 2.00s, frames = %d (%d active)"
+        with open(exe, "w") as f:
+            f.write("\n".join([
+                "#!%s" % sys.executable,
+                "import glob, os, sys",
+                "sys.path.insert(0, %r)" % os.path.join(ROOT, "tests"),
+                "import numpy as np, xisf_helper",
+                "run = next(a for a in sys.argv if a.startswith('-r='))[3:].split(',')",
+                "say = lambda s: print('6D>> ' + s, flush=True)",
+                "print('PixInsight Core 1.9.6 Lockhart (arm64)')",
+                "if run[0].endswith('WBPP.js'):",
+                "    opt = dict(a.split('=', 1) for a in run[1:] if '=' in a)",
+                "    n = len(glob.glob(os.path.join(opt['dir'], 'Light', '*')))",
+                "    out, g = opt['outputDirectory'], %r %% (n, n)" % group,
+                "    say('pipeline 4')",
+                "    say('start 1/4 Calibration | ' + g)",
+                "    os.makedirs(os.path.join(out, 'calibrated'), exist_ok=True)",
+                "    open(os.path.join(out, 'calibrated', 'a_c.xisf'), 'wb').write(b'x' * 5000)",
+                "    say('done 1/4 Calibration | %s | 2 | %d calibrated' % (g, n))",
+                "    say('start 3/4 Integration | ' + g)",
+                "    os.makedirs(os.path.join(out, 'master'), exist_ok=True)",
+                "    xisf_helper.write_xisf(os.path.join(out, 'master', 'masterLight_BIN-1_RGB_autocrop.xisf'),",
+                "                           np.full((8, 12, 3), 0.1, np.float32), [('EXPTIME', '2.000')])",
+                "    say('done 3/4 Integration | %s | 2 | %d integrated' % (g, n))",
+                "    say('done 4/4 Astrometric solution | %s | 3 | 1 failed' % g)",
+                "    say('end')",
+                "else:",
+                "    src, target = run[1], run[2]",
+                "    if 'kaputt' in src:",
+                "        say('error Bild kaputt')",
+                "        sys.exit(0)",
+                "    for s in ('Bild laden', 'Strecken', 'Speichern'):",
+                "        say('step ' + s)",
+                "    for ext in ('.jpg', '.tif'):",
+                "        open(target + ext, 'wb').write(b'x')",
+                "        say('saved ' + target + ext)",
+                "    say('fertig')", ""]))
+        os.chmod(exe, 0o755)
+
+        def wait_job():
+            self.assertTrue(wait_for(lambda: not st.gallery_job["active"], 60), st.gallery_job)
+            return st.gallery_job
+
+        real = studio.gallery.pixinsight_cli
+        studio.gallery.pixinsight_cli = lambda found=None: exe
+        try:
+            info = st.gallery_info()
+            self.assertEqual((info["pixinsight"], info["wbpp"]), (True, True))
+            st.act_gallery_stack({"session": name, "tool": "pixinsight"})
+            job = wait_job()
+            self.assertIsNone(job["error"], job)
+            self.assertEqual((job["tool"], len(job["steps"]), job["index"]), ("pixinsight", 4, 3))
+            self.assertTrue(job["result"].endswith("/pixinsight/wbpp_2x2s.xisf"), job["result"])
+            self.assertEqual(job["freed"], 5000)                        # Zwischenbilder gelöscht
+            self.assertEqual(job["warnings"], ["Astrometrie: 1 failed"])
+            dest = os.path.join(studio.OUT, "Astro", name, "pixinsight")
+            self.assertEqual(sorted(os.listdir(os.path.join(dest, "wbpp"))), ["master"])
+            sm = st.gallery_session("studio", name)
+            self.assertEqual(sm["results"][0]["name"], "wbpp_2x2s")      # neuestes Ergebnis zuerst
+            st.act_gallery_finish({"rel": job["result"], "tool": "pixinsight"})
+            job = wait_job()
+            self.assertIsNone(job["error"], job)
+            self.assertEqual((job["label"], job["index"], job["steps"][-1]), ("Mit PixInsight entwickeln", 3,
+                                                                              "Speichern"))
+            self.assertEqual(sorted(os.path.basename(r) for r in job["results"]),
+                             ["wbpp_2x2s_fertig-pi.jpg", "wbpp_2x2s_fertig-pi.tif"])
+            r = next(x for x in st.gallery_session("studio", name)["results"] if x["name"] == "wbpp_2x2s")
+            self.assertEqual(r["finished_by"], ["pixinsight"])
+            bad = os.path.join(dest, "kaputt.xisf")                      # Fehler im Skript kommt an
+            shutil.copy(os.path.join(dest, "wbpp_2x2s.xisf"), bad)
+            st.act_gallery_finish({"rel": studio.gallery.rel_of(studio.OUT, bad), "tool": "pixinsight"})
+            self.assertEqual(wait_job()["error"], "PixInsight: Bild kaputt")
+            with self.assertRaises(studio.CameraError):
+                st.act_gallery_finish({"rel": job["result"], "tool": "photoshop"})
+        finally:
+            studio.gallery.pixinsight_cli = real
+        studio.gallery.pixinsight_cli = lambda found=None: None          # nicht installiert
+        try:
+            with self.assertRaisesRegex(studio.CameraError, "PixInsight ist nicht installiert"):
+                st.act_gallery_stack({"session": name, "tool": "pixinsight"})
+        finally:
+            studio.gallery.pixinsight_cli = real
 
 
 if __name__ == "__main__":

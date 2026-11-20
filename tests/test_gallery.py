@@ -14,6 +14,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "studio"))
+sys.path.insert(0, os.path.join(ROOT, "tests"))                   # xisf_helper
 import astro  # noqa: E402
 import calib  # noqa: E402
 import gallery  # noqa: E402
@@ -218,7 +219,8 @@ class TestWeitergeben(unittest.TestCase):
 
     def test_pixinsight_ordner_fuer_wbpp(self):
         res = gallery.export_pixinsight(self.a.out, SESSION, self.lib)
-        dest = res["folder"]
+        dest = res["input"]                                            # pixinsight/Rohbilder – Ziel für „+ Directory“
+        self.assertEqual(dest, os.path.join(res["folder"], "Rohbilder"))
         self.assertEqual(res["counts"], {"light": 3, "dark": 3, "bias": 3, "flat": 3, "darkflat": 3})
         self.assertEqual(res["skipped"], {"dark": 1, "bias": 1})
         expect = {"Light": "LIGHT", "Dark": "DARK", "Flat": "FLAT", "Bias": "BIAS"}
@@ -240,13 +242,27 @@ class TestWeitergeben(unittest.TestCase):
             rows = list(csv.DictReader(f))
         self.assertEqual(len(rows), 15)
         self.assertEqual((rows[0]["typ"], rows[0]["iso"], rows[0]["blende"]), ("light", "800", "4.0"))
-        with open(os.path.join(dest, "LIESMICH.txt"), encoding="utf-8") as f:
+        with open(os.path.join(res["folder"], "LIESMICH.txt"), encoding="utf-8") as f:
             self.assertIn("1 mit anderer ISO/Zeit/Optik weggelassen", f.read())
-        gallery.export_pixinsight(self.a.out, SESSION, self.lib)       # noch einmal: ersetzt den Ordner
-        shutil.rmtree(dest)
-        os.makedirs(dest)                                               # fremder Ordner gleichen Namens
+        # noch einmal: Rohbilder/ neu, Ergebnisse und wbpp/ bleiben, Ordner früherer Versionen verschwinden
+        top = res["folder"]
+        keep = [os.path.join(top, "wbpp_3x3.2s.xisf"), os.path.join(top, "wbpp", "master", "masterDark_x.xisf")]
+        os.makedirs(os.path.dirname(keep[1]))
+        os.makedirs(os.path.join(top, "Light"))                        # Export einer früheren Version
+        open(os.path.join(top, "Light", "alt_LIGHT.CR2"), "w").close()
+        for p in keep:
+            open(p, "w").close()
+        open(os.path.join(dest, "fremd.txt"), "w").close()
+        gallery.export_pixinsight(self.a.out, SESSION, self.lib)
+        self.assertTrue(all(os.path.isfile(p) for p in keep))
+        self.assertFalse(os.path.exists(os.path.join(top, "Light")))
+        self.assertFalse(os.path.exists(os.path.join(dest, "fremd.txt")))
+        self.assertEqual(len(os.listdir(os.path.join(dest, "Light"))), 3)
+        shutil.rmtree(top)
+        os.makedirs(top)                                                # fremder Ordner gleichen Namens
         with self.assertRaises(ValueError):
             gallery.export_pixinsight(self.a.out, SESSION, self.lib)
+        os.rmdir(top)
 
     def test_siril_skript_mit_allen_rohbildern(self):
         res = gallery.prepare_siril(self.a.out, SESSION, self.lib)
@@ -372,6 +388,196 @@ class TestNachbearbeitung(unittest.TestCase):
         self.assertEqual((sm["check"]["main"], sm["check"]["stale"]), (5, False))
         gallery.cull(self.a.out, res["suggest"])
         self.assertTrue(gallery.session_summary(self.a.out, SESSION, None)["check"]["stale"])
+
+
+# Zeilen wie aus dem echten Lauf von WBPP 3.1.2 (PixInsight 1.9.6) mit studio/pixinsight/6d-wbpp-ereignisse.js
+DARKS = "Dark frames, 5496x3670, NoFilter, CFA, 1x1, 3.20s, frames = 20 (20 active)"
+LIGHTS = "Light frames, 5496x3670, NoFilter, RGB, 1x1, 3.20s, frames = 8 (8 active)"
+WBPP_LINES = """
+6D>> pipeline 31
+6D>> start 2/31 Integration | {d}
+6D>> done 2/31 Integration | {d} | 2 | 20 integrated
+6D>> start 11/31 Measurements
+6D>> done 11/31 Measurements |  | 2 | 8 measured
+6D>> start 24/31 Integration | {l}
+6D>> done 24/31 Integration | {l} | 2 | 8 integrated
+6D>> done 30/31 Astrometric solution | {l} | 3 | 2 failed
+6D>> end
+""".format(d=DARKS, l=LIGHTS)
+
+
+def fake_pixinsight(root, linux=False):
+    """Installation wie PixInsight 1.9.6 (macOS oder Linux), nur mit leeren Dateien → (Ordner der .app, Programm)."""
+    if linux:
+        exe = os.path.join(root, "PixInsight", "bin", "PixInsight")
+        app = os.path.dirname(os.path.dirname(exe))
+    else:
+        app = os.path.join(root, "PixInsight", "PixInsight.app")
+        exe = os.path.join(app, "Contents", "MacOS", "PixInsight")
+    wbpp = os.path.join(root, "PixInsight", "src", "scripts", "BatchPreprocessing", "WBPP.js")
+    for p in (exe, wbpp):
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "w").close()
+    return app, exe
+
+
+@unittest.skipUnless(HAS_NUMPY, "braucht numpy (venv)")
+class TestPixInsight(unittest.TestCase):
+    def setUp(self):
+        self.a = Ablage()
+        self.addCleanup(self.a.cleanup)
+        self.np = imaging.np
+        import xisf_helper
+        self.write_xisf = xisf_helper.write_xisf
+        self.rgb = self.np.random.default_rng(4).uniform(0, 1, (6, 8, 3)).astype(self.np.float32)
+
+    def test_xisf_lesen(self):
+        np, d = self.np, tempfile.mkdtemp(dir=self.a.out)
+        kw = [("IMAGETYP", "'Master Light'"), ("EXPTIME", "3.200"), ("ISOSPEED", "800."), ("CCD-TEMP", "38.30"),
+              ("DATE-OBS", "'2026-11-19T00:14:37.000'"), ("BAYERPAT", "'RGGB'")]
+        p = self.write_xisf(os.path.join(d, "m.xisf"), self.rgb, kw)
+        data, h = imaging.read_xisf(p)
+        self.assertEqual(data.shape, (6, 8, 3))                         # zweites Bild (Maske) übergangen
+        self.assertTrue(np.allclose(data, self.rgb * imaging.FULL_SCALE))
+        self.assertEqual((h["IMAGETYP"], h["EXPTIME"], h["ISOSPEED"], h["BAYERPAT"]), ("Master Light", 3.2, 800.0,
+                                                                                       "RGGB"))
+        self.assertEqual(imaging.image_header(p)[1], 3)
+        gray = (np.arange(48).reshape(6, 8) * 1000).astype(np.uint16)
+        for comp in (None, "zlib", "zlib+sh"):                          # Kompression wie PixInsight sie anbietet
+            q = self.write_xisf(os.path.join(d, "g.xisf"), gray, compression=comp, sample="UInt16")
+            self.assertTrue(np.array_equal(imaging.read_image(q)[0], gray), comp)
+        q = self.write_xisf(os.path.join(d, "n.xisf"), self.rgb, planar=False)   # pixelStorage="Normal"
+        self.assertTrue(np.allclose(imaging.read_xisf(q)[0], self.rgb * imaging.FULL_SCALE))
+        q = self.write_xisf(os.path.join(d, "z.xisf"), self.rgb, compression="lz4")
+        with self.assertRaisesRegex(ValueError, "lz4"):
+            imaging.read_xisf(q)
+        with open(q, "wb") as f:
+            f.write(b"SIMPLE  = T")
+        with self.assertRaises(ValueError):
+            imaging.read_xisf_header(q)
+
+    def test_programm_und_kommandozeile(self):
+        root = tempfile.mkdtemp(dir=self.a.out)
+        app, exe = fake_pixinsight(root)
+        self.assertEqual(gallery.pixinsight_cli({"pixinsight": app}), exe)
+        self.assertIsNone(gallery.pixinsight_cli({}))
+        self.assertEqual(gallery.pixinsight_root(exe), os.path.join(root, "PixInsight"))
+        self.assertTrue(gallery.wbpp_script(exe).endswith("src/scripts/BatchPreprocessing/WBPP.js"))
+        _, lexe = fake_pixinsight(tempfile.mkdtemp(dir=self.a.out), linux=True)    # /opt/PixInsight/bin/PixInsight
+        self.assertTrue(gallery.wbpp_script(lexe))
+        cmd = gallery.pi_command(exe, "/s/x.js", ["a=1", "/b c"])
+        self.assertEqual(cmd, [exe, "-n", "--automation-mode", "--no-focus-stealing", "-r=/s/x.js,a=1,/b c",
+                               "--force-exit"])
+        with self.assertRaisesRegex(ValueError, "Komma"):              # jsArguments werden am Komma getrennt
+            gallery.pi_command(exe, "/s/x.js", ["/Astro/2026-11-18_M31, M32/x.fits"])
+        for p in (gallery.PI_EVENTS, gallery.PI_FINISH):
+            self.assertTrue(os.path.isfile(p), p)
+        with open(gallery.PI_FINISH, encoding="utf-8") as f:            # Schritte des Skripts = Schritte im Studio
+            import re
+            self.assertEqual(tuple(re.findall(r'sixdStep\( "([^"]+)" \)', f.read())), gallery.PI_FINISH_STEPS)
+
+    def test_ereignisse_von_wbpp(self):
+        ev = [gallery.pi_event(line) for line in WBPP_LINES.strip().splitlines()]
+        self.assertEqual(ev[0], {"event": "pipeline", "count": 31})
+        self.assertEqual((ev[1]["index"], ev[1]["count"], ev[1]["name"]), (2, 31, "Integration"))
+        self.assertEqual(gallery.wbpp_label(ev[1]["name"], ev[1]["group"]), "Master-Dark erzeugen")
+        self.assertEqual(gallery.wbpp_detail(ev[1]["group"]), "20 Darks · 3.2 s")
+        self.assertEqual(gallery.wbpp_detail("Bias frames, 5496x3670, 1x1, 0.00s, frames = 30 (30 active)"), "30 Bias")
+        self.assertEqual((ev[4]["group"], ev[4]["status"], ev[4]["message"], ev[4]["failed"]),
+                         ("", 2, "8 measured", False))
+        self.assertEqual(gallery.wbpp_label(ev[3]["name"]), "Bilder bewerten")
+        self.assertEqual(gallery.wbpp_label("Integration", ev[5]["group"]), "Lights stapeln")
+        self.assertEqual(gallery.wbpp_label("Calibration", "Light frames, …"), "Lights kalibrieren")
+        self.assertEqual(gallery.wbpp_label("Neuer Schritt"), "Neuer Schritt")
+        self.assertTrue(ev[7]["failed"])
+        self.assertEqual(ev[8], {"event": "end", "text": ""})
+        self.assertEqual(gallery.pi_event("6D>> step Strecken"), {"event": "step", "text": "Strecken"})
+        for junk in ("", "PixInsight Core 1.9.6", ":LOGFILE:/x.log:LOGFILE:", "6D>> start kaputt"):
+            self.assertIsNone(gallery.pi_event(junk), junk)
+
+    def test_wbpp_vorbereiten_und_ergebnis_einsammeln(self):
+        for i in range(1, 4):
+            self.a.frame("light", i)
+            self.a.frame("dark", i)
+        _, exe = fake_pixinsight(tempfile.mkdtemp(dir=self.a.out))
+        res = gallery.prepare_wbpp(self.a.out, SESSION, None, exe)
+        dest = os.path.join(self.a.base, "pixinsight")
+        self.assertEqual((res["folder"], res["out"], res["lights"], res["calib"]),
+                         (dest, os.path.join(dest, "wbpp"), 3, 3))
+        run = res["command"][4]
+        self.assertEqual(res["command"][:4], [exe, "-n", "--automation-mode", "--no-focus-stealing"])
+        self.assertEqual(res["command"][-1], "--force-exit")
+        args = run[3:].split(",")
+        self.assertTrue(args[0].endswith("BatchPreprocessing/WBPP.js"))
+        for a in ("automationMode=true", "dir=" + os.path.join(dest, "Rohbilder"), "outputDirectory=" +
+                  os.path.join(dest, "wbpp"), "usePipelineScript=true", "pipelineScriptFile=" + gallery.PI_EVENTS,
+                  "platesolve=false"):
+            self.assertIn(a, args)
+        # was WBPP hinterlässt (Namen wie im echten Lauf)
+        since = time.time()
+        wbpp = res["out"]
+        stem = "masterLight_BIN-1_5496x3670_EXPOSURE-3.20s_FILTER-NoFilter_RGB"
+        master = os.path.join(wbpp, "master")
+        os.makedirs(master)
+        self.write_xisf(os.path.join(master, stem + "_autocrop.xisf"), self.rgb, [("EXPTIME", "3.200")])
+        for name, size in ((stem + ".xisf", 7000), ("LN_Reference_Light_x.xisf", 500),
+                           ("masterDark_BIN-1_5496x3670_EXPOSURE-3.20s.xisf", 300)):
+            with open(os.path.join(master, name), "wb") as f:
+                f.write(b"x" * size)
+        for sub in ("calibrated", "debayered", "registered"):
+            os.makedirs(os.path.join(wbpp, sub, "Light_x"))
+            with open(os.path.join(wbpp, sub, "Light_x", "a.xisf"), "wb") as f:
+                f.write(b"x" * 1000)
+        os.makedirs(os.path.join(wbpp, "logs"))
+        open(os.path.join(wbpp, "logs", "20261120002453.log"), "w").close()
+        path, freed = gallery.collect_wbpp(dest, since, lights=8)
+        self.assertEqual(path, os.path.join(dest, "wbpp_8x3.2s.xisf"))
+        self.assertEqual(freed, 7000 + 500 + 3000)
+        self.assertEqual(sorted(os.listdir(wbpp)), ["logs", "master"])
+        self.assertEqual(os.listdir(master), ["masterDark_BIN-1_5496x3670_EXPOSURE-3.20s.xisf"])
+        # in der Bildverwaltung: Gruppe „PixInsight-Ergebnisse“ (nur die oberste Ebene), Aufnahmedaten, Vorschau
+        idx = gallery.index(self.a.out)
+        groups = {g["key"]: g["count"] for g in idx["sessions"][0]["groups"]}
+        self.assertEqual(groups["pixinsight"], 1)
+        it = gallery.items(self.a.out, "s:" + SESSION, "pixinsight")[0]
+        self.assertEqual((it["kind"], it["meta"]["n"], it["meta"]["exposure"]), ("xisf", 8, 3.2))
+        self.assertIn("wbpp_8x3.2s", [i["name"] for i in gallery.items(self.a.out, "r:", "all")])
+        data, ctype = gallery.thumbnail(self.a.out, it["id"], 120)
+        self.assertEqual(ctype, "image/png")
+        # beim nächsten Lauf ohne Master-Light: Grund aus dem Protokoll
+        with open(os.path.join(wbpp, "logs", "20261120010000.log"), "w") as f:
+            f.write("[2026-11-20 01:00:00] *** Error: <raw>No light frames</raw> found\n")
+        with self.assertRaisesRegex(ValueError, "No light frames found"):
+            gallery.collect_wbpp(dest, time.time())
+
+    def test_fertig_entwickeln_mit_pixinsight_und_siril(self):
+        _, exe = fake_pixinsight(tempfile.mkdtemp(dir=self.a.out))
+        folder = os.path.join(os.path.realpath(self.a.base), "pixinsight")       # /var → /private/var (macOS)
+        os.makedirs(folder)
+        p = self.write_xisf(os.path.join(folder, "wbpp_8x3.2s.xisf"), self.rgb, [("EXPTIME", "3.200")])
+        rel = gallery.rel_of(self.a.out, p)
+        res = gallery.prepare_pi_finish(self.a.out, rel, exe)
+        target = os.path.join(folder, "wbpp_8x3.2s_fertig-pi")
+        self.assertEqual(res["command"][4], "-r=%s,%s,%s" % (gallery.PI_FINISH, p, target))
+        self.assertEqual(res["outputs"], [target + ".jpg", target + ".tif"])
+        self.assertEqual(res["steps"], list(gallery.PI_FINISH_STEPS))
+        self.assertIn("load wbpp_8x3.2s.xisf", read(gallery.prepare_finish(self.a.out, rel)["script"]))  # Siril 1.4
+        gray = self.write_xisf(os.path.join(folder, "grau.xisf"), self.rgb[..., 0])
+        with self.assertRaisesRegex(ValueError, "farbig"):
+            gallery.prepare_pi_finish(self.a.out, gallery.rel_of(self.a.out, gray), exe)
+        # fertig: in der Übersicht der Sitzung beim Stapel, von welchem Programm
+        os.remove(gray)
+        old = time.time() - 60
+        os.utime(p, (old, old))
+        for ext in (".jpg", ".tif"):
+            with open(target + ext, "wb") as f:
+                f.write(JPEG)
+        sm = gallery.session_summary(self.a.out, SESSION, None)
+        r = next(x for x in sm["results"] if x["name"] == "wbpp_8x3.2s")
+        self.assertEqual((r["finished_jpg"], r["finished_by"]), (gallery.rel_of(self.a.out, target + ".jpg"),
+                                                                ["pixinsight"]))
+        done = next(i for i in gallery.items(self.a.out, "s:" + SESSION, "pixinsight") if i["finished"])
+        self.assertEqual((done["name"], done["finished_by"]), ("wbpp_8x3.2s_fertig-pi", "pixinsight"))
 
 
 if __name__ == "__main__":

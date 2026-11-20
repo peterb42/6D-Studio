@@ -6,7 +6,9 @@ Master-Erstellung sind aus. Metadaten (ISO, Zeit, Sensortemperatur) und FITS-Kö
 Konventionen:
   * RAW-Daten bleiben ungestreckt in ADU (Kamerawerte, inkl. Schwarzwert ~2047 bei der 6D). Das Bayer-Muster wird
     beim Lesen auf RGGB gebracht (ggf. eine Zeile/Spalte weg) – Masters und Lights passen dadurch immer zueinander.
-  * FITS: 32-Bit-Gleitkomma, Werte 0…1 = ADU / 65535 wie bei Siril, Zeilen von oben (ROWORDER = 'TOP-DOWN').
+  * FITS: 32-Bit-Gleitkomma, Werte 0…1 = ADU / 65535 wie bei Siril, Zeilen von unten (ROWORDER = 'BOTTOM-UP',
+    FITS-Standard – so liest Siril). Beim Lesen zählt ROWORDER; PixInsight schreibt 'TOP-DOWN'.
+  * XISF (PixInsight, WBPP-Masters) nur lesen: Vorschau und Aufnahmedaten in der Bildverwaltung.
 """
 import os
 import struct
@@ -167,24 +169,27 @@ def read_fits_header(path):
                     return header, pos
                 if card[8:10] != "= ":
                     continue
-                raw = card[10:].strip()
-                if raw.startswith("'"):
-                    end = raw.find("'", 1)
-                    while end > 0 and raw[end:end + 2] == "''":
-                        end = raw.find("'", end + 2)
-                    header[key] = raw[1:end].replace("''", "'").rstrip()
-                    continue
-                raw = raw.split("/")[0].strip()
-                if raw in ("T", "F"):
-                    header[key] = raw == "T"
-                else:
-                    try:
-                        header[key] = int(raw)
-                    except ValueError:
-                        try:
-                            header[key] = float(raw)
-                        except ValueError:
-                            header[key] = raw
+                header[key] = _fits_value(card[10:])
+
+
+def _fits_value(raw):
+    """Wert einer FITS-Karte (auch eines FITSKeyword in XISF): 'Text', T/F, Zahl; Kommentar nach / fällt weg."""
+    raw = raw.strip()
+    if raw.startswith("'"):
+        end = raw.find("'", 1)
+        while end > 0 and raw[end:end + 2] == "''":
+            end = raw.find("'", end + 2)
+        return raw[1:end if end > 0 else None].replace("''", "'").rstrip()
+    raw = raw.split("/")[0].strip()
+    if raw in ("T", "F"):
+        return raw == "T"
+    try:
+        return int(raw)
+    except ValueError:
+        try:
+            return float(raw)
+        except ValueError:
+            return raw
 
 
 def write_fits(path, data, cards):
@@ -261,6 +266,84 @@ def to_bottom_up(path):
         f.write(rest)
     os.replace(tmp, path)
     return True
+
+
+# ---------------------------------------------------------------- XISF (PixInsight, z. B. WBPP-Masters)
+XISF_EXT = (".xisf",)
+XISF_NS = "{http://www.pixinsight.com/xisf}"
+XISF_TYPES = {"UInt8": "u1", "UInt16": "u2", "UInt32": "u4", "Float32": "f4", "Float64": "f8"}
+
+
+def read_xisf_header(path):
+    """→ (FITS-Schlüsselwörter des ersten Bilds als dict, Bildangaben). Nur Standardbibliothek. Spezifikation:
+    XISF 1.0 – „XISF0100“, Länge des XML-Kopfs (4 Byte, little endian), 4 Byte frei, dann der Kopf."""
+    import xml.etree.ElementTree as ET
+    with open(path, "rb") as f:
+        sig = f.read(16)
+        if len(sig) < 16 or sig[:8] != b"XISF0100":
+            raise ValueError("Keine XISF-Datei: %s" % path)
+        text = f.read(struct.unpack("<I", sig[8:12])[0]).decode("utf-8", "replace")
+    try:
+        image = ET.fromstring(text).find(XISF_NS + "Image")
+    except ET.ParseError as e:
+        raise ValueError("XISF-Kopf unlesbar: %s (%s)" % (path, e)) from None
+    if image is None:
+        raise ValueError("XISF ohne Bild: %s" % path)
+    header = {}
+    for kw in image.findall(XISF_NS + "FITSKeyword"):
+        name = kw.get("name", "")
+        if name and name not in ("COMMENT", "HISTORY") and name not in header:
+            header[name] = _fits_value(kw.get("value", ""))
+    geometry = [int(v) for v in image.get("geometry", "0:0").split(":")]
+    info = {"width": geometry[0], "height": geometry[1], "channels": geometry[2] if len(geometry) > 2 else 1,
+            "format": image.get("sampleFormat", "Float32"), "location": image.get("location", ""),
+            "compression": image.get("compression"), "storage": image.get("pixelStorage", "Planar"),
+            "byteorder": image.get("byteOrder", "little"), "color": image.get("colorSpace", "Gray")}
+    return header, info
+
+
+def read_xisf(path):
+    """→ (Daten wie read_fits: (H, W) oder (H, W, 3) als float32, Gleitkomma 0…1 → ADU; Kopf). Erste Zeile oben
+    (XISF kennt nur diese Richtung). Unkomprimiert oder zlib (auch mit Byte-Shuffle) – lz4/zstd nicht."""
+    header, info = read_xisf_header(path)
+    where = info["location"].split(":")
+    if len(where) != 3 or where[0] != "attachment":
+        raise ValueError("XISF-Bild nicht als Anhang gespeichert: %s" % path)
+    if info["format"] not in XISF_TYPES:
+        raise ValueError("XISF-Datenformat %s nicht unterstützt" % info["format"])
+    dtype = np.dtype(("<" if info["byteorder"] == "little" else ">") + XISF_TYPES[info["format"]])
+    with open(path, "rb") as f:
+        f.seek(int(where[1]))
+        raw = f.read(int(where[2]))
+    if info["compression"]:
+        codec = info["compression"].split(":")[0]
+        if codec not in ("zlib", "zlib+sh"):
+            raise ValueError("XISF mit %s komprimiert – hier nicht lesbar (PixInsight: ohne Kompression "
+                             "speichern)" % codec)
+        raw = zlib.decompress(raw)
+        if codec.endswith("+sh"):                    # Byte-Shuffle: erst alle ersten Bytes, dann alle zweiten …
+            raw = np.frombuffer(raw, np.uint8).reshape(dtype.itemsize, -1).T.tobytes()
+    w, h, c = info["width"], info["height"], info["channels"]
+    arr = np.frombuffer(raw, dtype, count=w * h * c)
+    arr = arr.reshape(c, h, w).transpose(1, 2, 0) if info["storage"] == "Planar" else arr.reshape(h, w, c)
+    arr = arr.astype(np.float32)
+    if dtype.kind == "f":
+        arr *= FULL_SCALE
+    return (arr[..., 0] if c == 1 else np.ascontiguousarray(arr[..., :3])), header
+
+
+def read_image(path):
+    """FITS oder XISF → (Daten, Kopf)."""
+    return read_xisf(path) if path.lower().endswith(XISF_EXT) else read_fits(path)
+
+
+def image_header(path):
+    """→ (Kopf, Anzahl Farbkanäle) für FITS und XISF, ohne die Bilddaten zu lesen."""
+    if path.lower().endswith(XISF_EXT):
+        header, info = read_xisf_header(path)
+        return header, info["channels"]
+    header, _ = read_fits_header(path)
+    return header, header.get("NAXIS3", 1) if header.get("NAXIS", 0) >= 3 else 1
 
 
 # ---------------------------------------------------------------- Bilder laden

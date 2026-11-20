@@ -1213,9 +1213,11 @@ class Studio:
     def gallery_info(self):
         found = gallery.find_tools()
         home = os.path.expanduser("~")
+        pi = gallery.pixinsight_cli(found)
         return {"roots": [dict(r, path=r["path"].replace(home, "~"), index=gallery.index(r["path"]))
                           for r in self.gallery_roots()],
                 "tools": gallery.tools_info(found), "siril": bool(gallery.siril_cli(found)),
+                "pixinsight": bool(pi), "wbpp": bool(pi and gallery.wbpp_script(pi)),
                 "frame_types": {k: v["label"] for k, v in astro.FRAME_TYPES.items()}}
 
     def gallery_session(self, root, session):
@@ -1280,12 +1282,13 @@ class Studio:
         return {"siril": res}
 
     # Aufträge der Nachbearbeitung – einer zur Zeit, Fortschritt in gallery_job
-    def _start_job(self, kind, label, root, session, work):
+    def _start_job(self, kind, label, root, session, work, tool=None):
         if self.gallery_job and self.gallery_job["active"]:
             raise CameraError("Es läuft schon: %s" % self.gallery_job["label"])
         job = {"kind": kind, "label": label, "root": root or "studio", "session": session, "active": True,
-               "steps": [], "step": "startet", "index": 0, "percent": 0.0, "detail": "", "error": None,
-               "result": None, "results": [], "freed": 0, "check": None, "started": time.time(), "finished": None}
+               "tool": tool, "steps": [], "step": "startet", "index": 0, "percent": 0.0, "detail": "",
+               "error": None, "warnings": [], "result": None, "results": [], "freed": 0, "check": None,
+               "started": time.time(), "finished": None}
         self.gallery_job = job
 
         def run():
@@ -1326,6 +1329,31 @@ class Studio:
         if rc != 0:
             raise RuntimeError("Siril meldet einen Fehler (Code %d): %s" % (rc, last))
 
+    @staticmethod
+    def _pixinsight(command, handle):
+        """PixInsight ohne Oberfläche (gallery.pi_command); jede Zeile „6D>> …“ der Standardausgabe geht als
+        Ereignis an handle. Der Rückgabewert von PixInsight ist auch nach Fehlern im Skript 0 – ob es geklappt hat,
+        sagen die Ereignisse und die Ausgabedateien."""
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                              text=True, bufsize=1, errors="replace") as p:
+            for line in p.stdout:
+                ev = gallery.pi_event(line)
+                if ev:
+                    handle(ev)
+            return p.wait()
+
+    def _tool(self, body):
+        tool = body.get("tool") or "siril"
+        if tool == "siril":
+            if not gallery.siril_cli():
+                raise CameraError("Siril ist nicht installiert (siril.org)")
+        elif tool == "pixinsight":
+            if not gallery.pixinsight_cli():
+                raise CameraError("PixInsight ist nicht installiert (pixinsight.com)")
+        else:
+            raise CameraError("Unbekanntes Programm: %s" % tool)
+        return tool
+
     def act_gallery_check(self, body):
         out, session = self._root(body.get("root")), body.get("session")
 
@@ -1339,10 +1367,10 @@ class Studio:
         self._start_job("check", "Lights prüfen", body.get("root"), session, work)
 
     def act_gallery_stack(self, body):
-        """Mit Siril vorverarbeiten und stapeln; danach die Zwischenbilder löschen."""
+        """Mit Siril oder PixInsight (WBPP) vorverarbeiten und stapeln; danach die Zwischenbilder löschen."""
         out, session = self._root(body.get("root")), body.get("session")
-        if not gallery.siril_cli():
-            raise CameraError("Siril ist nicht installiert (siril.org) – oder „Für PixInsight“ nehmen")
+        if self._tool(body) == "pixinsight":
+            return self._stack_pixinsight(out, session, body.get("root"))
 
         def work(job):
             res = gallery.prepare_siril(out, session, self._library_for(out))
@@ -1358,31 +1386,86 @@ class Studio:
             job["freed"] = gallery.cleanup_siril(res["folder"])
             self.log("✔︎ Siril: %s in %.0f s – Zwischenbilder gelöscht (%.1f GB frei)" % (
                 sorted(new)[-1], time.time() - t0, job["freed"] / 1e9))
-        self._start_job("stack", "Mit Siril stapeln", body.get("root"), session, work)
+        self._start_job("stack", "Mit Siril stapeln", body.get("root"), session, work, tool="siril")
+
+    def _stack_pixinsight(self, out, session, root):
+        """WBPP ohne Oberfläche: Export nach pixinsight/, Lauf mit Ereignisskript, Master-Light als
+        pixinsight/wbpp_<n>x<Zeit>s.xisf, Zwischenbilder weg."""
+        exe = gallery.pixinsight_cli()
+        if not gallery.wbpp_script(exe):
+            raise CameraError("WBPP nicht gefunden – PixInsight 1.9.6 oder neuer nötig")
+
+        def work(job):
+            res = gallery.prepare_wbpp(out, session, self._library_for(out), exe)
+            job["step"] = "PixInsight startet, WBPP prüft die Bilder"
+            t0 = time.time()
+            self.log("▶︎ PixInsight (WBPP) stapelt %d Lights von %s" % (res["lights"], session))
+            state = {"lights": None, "labels": {}}
+
+            def on(ev):
+                if ev["event"] == "pipeline":
+                    job["steps"] = [""] * ev["count"]
+                elif ev["event"] == "start":
+                    label = gallery.wbpp_label(ev["name"], ev["group"])
+                    state["labels"][ev["index"]] = label
+                    job.update(index=ev["index"], step=label, percent=0.0, detail=gallery.wbpp_detail(ev["group"]))
+                elif ev["event"] == "done":
+                    label = state["labels"].get(ev["index"]) or gallery.wbpp_label(ev["name"], ev["group"])
+                    if ev["failed"]:
+                        job["warnings"].append("%s: %s" % (label, ev["message"] or "fehlgeschlagen"))
+                    m = re.match(r"(\d+) integrated", ev["message"])
+                    if ev["name"] == "Integration" and ev["group"].startswith("Light") and m:
+                        state["lights"] = int(m.group(1))
+            self._pixinsight(res["command"], on)
+            try:
+                path, job["freed"] = gallery.collect_wbpp(res["folder"], t0, state["lights"])
+            except (ValueError, OSError) as e:
+                raise RuntimeError(str(e)) from None
+            job["result"] = gallery.rel_of(out, path)
+            self.log("✔︎ WBPP: %s in %.0f s – Zwischenbilder gelöscht (%.1f GB frei)%s" % (
+                os.path.basename(path), time.time() - t0, job["freed"] / 1e9,
+                "; Warnung: " + "; ".join(job["warnings"]) if job["warnings"] else ""))
+        self._start_job("stack", "Mit PixInsight stapeln", root, session, work, tool="pixinsight")
 
     def act_gallery_finish(self, body):
-        """Gestapeltes Bild mit Siril fertig entwickeln → JPEG und 16-Bit-TIFF daneben."""
+        """Gestapeltes Bild mit Siril oder PixInsight fertig entwickeln → JPEG und 16-Bit-TIFF daneben."""
         out, rel = self._root(body.get("root")), body.get("rel")
-        if not gallery.siril_cli():
-            raise CameraError("Siril ist nicht installiert (siril.org)")
+        tool = self._tool(body)
         try:
-            res = gallery.prepare_finish(out, rel)
+            res = (gallery.prepare_pi_finish(out, rel, gallery.pixinsight_cli()) if tool == "pixinsight"
+                   else gallery.prepare_finish(out, rel))
         except (ValueError, OSError) as e:
             raise CameraError(str(e)) from None
         parts = rel.split("/")
+        name = "PixInsight" if tool == "pixinsight" else "Siril"
 
         def work(job):
             job["steps"] = res["steps"]
-            self._siril(job, res["folder"], res["script"])
-            os.remove(res["script"])
-            done = [p for p in res["outputs"] if os.path.isfile(p)]
-            if not done:
-                raise RuntimeError("Siril lief durch, aber es gibt kein fertiges Bild")
+            t0 = time.time()
+            if tool == "pixinsight":
+                problem = []
+
+                def on(ev):
+                    if ev["event"] == "step":
+                        job.update(index=job["index"] + 1, step=ev["text"], percent=0.0)
+                    elif ev["event"] == "saved":
+                        job["detail"] = os.path.basename(ev["text"])
+                    elif ev["event"] == "error":
+                        problem.append(ev["text"])
+                self._pixinsight(res["command"], on)
+                if problem:
+                    raise RuntimeError("PixInsight: %s" % problem[0])
+            else:
+                self._siril(job, res["folder"], res["script"])
+                os.remove(res["script"])
+            done = [p for p in res["outputs"] if os.path.isfile(p) and os.path.getmtime(p) >= t0 - 1]
+            if not done:                             # ältere Ergebnisse gleichen Namens zählen nicht
+                raise RuntimeError("%s lief durch, aber es gibt kein fertiges Bild" % name)
             job["results"] = [gallery.rel_of(out, p) for p in done]
             job["result"] = job["results"][0]
-            self.log("✔︎ Fertig entwickelt: %s" % ", ".join(os.path.basename(p) for p in done))
-        self._start_job("finish", "Fertig entwickeln", body.get("root"),
-                        parts[1] if len(parts) > 2 and parts[0] == "Astro" else None, work)
+            self.log("✔︎ Fertig entwickelt (%s): %s" % (name, ", ".join(os.path.basename(p) for p in done)))
+        self._start_job("finish", "Mit %s entwickeln" % name, body.get("root"),
+                        parts[1] if len(parts) > 2 and parts[0] == "Astro" else None, work, tool=tool)
 
     def act_library_delete(self, body):
         try:

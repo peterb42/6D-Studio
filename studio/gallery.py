@@ -4,15 +4,18 @@ Quellen (alles unter OUT, z. B. ~/Pictures/6D-Tethering):
     Astro/<Nacht>_<Objekt>/{lights,darks,biases,flats,darkflats}/   Serien (siehe astro.py)
     Astro/<Nacht>_<Objekt>/livestack/                               Live-Stack-Ergebnisse (FITS + PNG)
     Astro/<Nacht>_<Objekt>/siril/*.fit                              Ergebnisse der Siril-Vorverarbeitung
+    Astro/<Nacht>_<Objekt>/pixinsight/*.xisf                        Ergebnisse von WBPP (PixInsight)
     Astro/<Nacht>_<Objekt>/verworfen/<Ordner>/                      aussortierte Bilder
     Astro/Bibliothek/{bias,darks,flats,darkflats}/                  Masters (calib.py)
     *.CR2 / *.JPG direkt in OUT                                     Einzelaufnahmen (Auslösen, Bulb)
 
 Weitergeben:
   * PixInsight (WBPP): <Sitzung>/pixinsight/ mit Light/ Dark/ Flat/ Bias/ – harte Verknüpfungen, Namen so, dass
-    WBPP den Bildtyp sicher aus dem Pfad erkennt (siehe WBPP_TYPE), dazu Listen und bilder.csv.
+    WBPP den Bildtyp sicher aus dem Pfad erkennt (siehe WBPP_TYPE), dazu Listen und bilder.csv. Das Studio kann
+    WBPP auch selbst starten (ohne Oberfläche, PixInsight -n --automation-mode); Arbeitsordner pixinsight/wbpp/.
   * Siril: <Sitzung>/siril/ mit lights/ darks/ flats/ biases/ darkflats/ (nur RAWs, verknüpft) und einem Skript,
     das fehlende Kalibrierbilder durch passende Masters aus der Bibliothek ersetzt.
+  * Fertig entwickeln: mit Siril (Skript) oder PixInsight (pixinsight/6d-fertig.js) → JPEG und 16-Bit-TIFF.
   * „Öffnen mit“ einem installierten Programm (TOOLS), „Im Finder zeigen“.
 """
 import csv
@@ -33,9 +36,10 @@ import imaging
 GROUPS = (("lights", "Lights", "light"), ("darks", "Darks", "dark"), ("biases", "Bias", "bias"),
           ("flats", "Flats", "flat"), ("darkflats", "Dark-Flats", "darkflat"),
           ("livestack", "Live-Stack", "stack"), ("siril", "Siril-Ergebnisse", "result"),
-          ("verworfen", "Aussortiert", "rejected"))
+          ("pixinsight", "PixInsight-Ergebnisse", "result"), ("verworfen", "Aussortiert", "rejected"))
 FRAME_FOLDERS = {g[0]: g[2] for g in GROUPS[:5]}          # Ordner → Bildtyp (astro.FRAME_TYPES)
-PRIMARY = ("raw", "fits", "tiff", "jpeg", "png")           # welche Datei eines Bilds die „eigentliche“ ist
+PRIMARY = ("raw", "fits", "xisf", "tiff", "jpeg", "png")   # welche Datei eines Bilds die „eigentliche“ ist
+DATA_KINDS = ("fits", "xisf")                              # lineare Bilddaten (gestapelt: weiterentwickeln)
 THUMB, LARGE = 360, 1600
 EXPORT_MARK = ".6d-studio-export"                          # nur Ordner mit dieser Marke werden neu angelegt
 
@@ -48,11 +52,12 @@ WBPP_FOLDERS = {"light": "Light", "dark": "Dark", "darkflat": "Dark", "flat": "F
 # Programme zur Nachbearbeitung (macOS). kinds: womit das Programm umgehen kann.
 TOOLS = (
     {"id": "pixinsight", "name": "PixInsight", "app": r"^PixInsight\.app$",
-     "kinds": {"raw", "fits", "tiff", "jpeg", "png"}, "hint": "Profi-Werkzeug; Vorverarbeitung mit WBPP"},
-    {"id": "siril", "name": "Siril", "app": r"^Siril\.app$", "kinds": {"raw", "fits", "tiff", "jpeg", "png"},
+     "kinds": {"raw", "fits", "xisf", "tiff", "jpeg", "png"}, "hint": "Profi-Werkzeug; Vorverarbeitung mit WBPP"},
+    {"id": "siril", "name": "Siril", "app": r"^Siril\.app$", "kinds": {"raw", "fits", "xisf", "tiff", "jpeg", "png"},
      "hint": "kostenlos: Kalibrieren, Stapeln, Hintergrund, Farbe, Strecken"},
-    {"id": "graxpert", "name": "GraXpert", "app": r"^GraXpert.*\.app$", "kinds": {"fits", "tiff", "png", "jpeg"},
-     "hint": "kostenlos: Gradienten entfernen, KI-Entrauschen (gestapelte Bilder)"},
+    {"id": "graxpert", "name": "GraXpert", "app": r"^GraXpert.*\.app$",
+     "kinds": {"fits", "xisf", "tiff", "png", "jpeg"}, "hint": "kostenlos: Gradienten entfernen, KI-Entrauschen "
+                                                                "(gestapelte Bilder)"},
     {"id": "sls", "name": "Starry Landscape Stacker", "app": r"^Starry Landscape Stacker.*\.app$",
      "kinds": {"jpeg", "tiff"}, "hint": "Milchstraße mit Vordergrund stapeln (Mac)"},
     {"id": "app", "name": "Astro Pixel Processor", "app": r"^Astro ?Pixel ?Processor.*\.app$",
@@ -82,7 +87,7 @@ def kind_of(name):
     if k:
         return k
     ext = os.path.splitext(name)[1].lower()
-    return {".png": "png", ".tif": "tiff", ".tiff": "tiff", ".xisf": "fits"}.get(ext)
+    return {".png": "png", ".tif": "tiff", ".tiff": "tiff", ".xisf": "xisf"}.get(ext)
 
 
 def safe_path(out, rel):
@@ -150,7 +155,7 @@ def index(out):
             groups = []
             for folder, label, _ in GROUPS:
                 paths = _files(os.path.join(base, folder), recursive=folder == "verworfen")
-                if folder == "siril":
+                if folder in RESULT_TOOLS:
                     paths = [p for p in paths if kind_of(p) in RESULT_KINDS]
                 if paths:
                     groups.append(dict(_group_counts(paths), key=folder, label=label))
@@ -174,16 +179,18 @@ def index(out):
     library = [{"id": "lib", "name": "Kalibrier-Bibliothek", "night": None, "groups": lib_groups}] if lib_groups else []
     res = _result_files(out)
     results = [{"id": "r:", "name": "Ergebnisse", "night": None,
-                "groups": [dict(_group_counts(res), key="all", label="Live-Stacks und Siril")]}] if res else []
+                "groups": [dict(_group_counts(res), key="all", label="Live-Stacks, Siril, PixInsight")]}] if res else []
     return {"results": results, "sessions": sessions, "singles": singles, "library": library}
 
 
-RESULT_FOLDERS = ("livestack", "siril")
-RESULT_KINDS = ("fits", "png", "jpeg", "tiff")
+RESULT_TOOLS = ("siril", "pixinsight")                     # Ordner der Programme – nur die Ergebnisse darin zählen
+RESULT_FOLDERS = ("livestack",) + RESULT_TOOLS
+RESULT_KINDS = ("fits", "xisf", "png", "jpeg", "tiff")
 
 
 def _result_files(out):
-    """Alle Ergebnisse: Live-Stacks und Siril-Ergebnisse (FITS, fertig entwickelte JPEG/TIFF) aller Sitzungen."""
+    """Alle Ergebnisse: Live-Stacks, Siril- und PixInsight-Ergebnisse (FITS/XISF, fertig entwickelte JPEG/TIFF)
+    aller Sitzungen – je Ordner nur die oberste Ebene (nicht Light/, wbpp/ …)."""
     paths, astro_dir = [], _astro(out)
     if os.path.isdir(astro_dir):
         for name in os.listdir(astro_dir):
@@ -203,7 +210,7 @@ def _source_files(out, source, group):
             raise ValueError("Unbekannte Gruppe")
         folder = os.path.join(base, group)
         paths = _files(folder, recursive=group == "verworfen")
-        if group == "siril":
+        if group in RESULT_TOOLS:
             paths = [p for p in paths if kind_of(p) in RESULT_KINDS]
         return paths, folder
     if source == "r:":
@@ -231,14 +238,18 @@ def meta_of(path):
     meta = {}
     if k in ("raw", "jpeg"):
         meta = imaging.read_meta(path)
-    elif k == "fits" and path.lower().endswith(imaging.FITS_EXT):
+    elif k in DATA_KINDS:
         try:
-            h, _ = imaging.read_fits_header(path)
-            meta = {"iso": h.get("ISOSPEED"), "exposure": h.get("EXPTIME"), "temp": h.get("CCD-TEMP"),
-                    "n": h.get("NCOMBINE"), "type": h.get("IMAGETYP"), "fnumber": h.get("FNUMBER"),
-                    "focal": h.get("FOCALLEN"), "time": (h.get("DATE-OBS") or "").replace("T", " ") or None,
-                    "model": h.get("INSTRUME")}
-        except (OSError, ValueError):
+            h, _ = imaging.image_header(path)
+            iso = h.get("ISOSPEED")
+            meta = {"iso": int(iso) if isinstance(iso, float) and iso.is_integer() else iso,
+                    "exposure": h.get("EXPTIME"), "temp": h.get("CCD-TEMP"), "n": h.get("NCOMBINE"),
+                    "type": h.get("IMAGETYP"), "fnumber": h.get("FNUMBER"), "focal": h.get("FOCALLEN"),
+                    "time": (h.get("DATE-OBS") or "").replace("T", " ")[:19] or None, "model": h.get("INSTRUME")}
+            m = WBPP_RESULT.match(os.path.basename(path))
+            if m and not meta["n"]:                  # WBPP schreibt die Zahl der Lights nicht in den Kopf
+                meta["n"] = int(m.group(1))
+        except (OSError, ValueError, KeyError):
             meta = {}
     with _meta_lock:
         _meta_cache[path] = (mtime, meta)
@@ -266,7 +277,10 @@ def items(out, source, group):
         parts = entry["id"].split("/")
         if len(parts) >= 3 and parts[0] == "Astro" and parts[1] != calib.LIBRARY_FOLDER:
             entry["session"] = parts[1]
-        entry["finished"] = os.path.basename(stem).endswith(FINISH_SUFFIX)
+        done = FINISHED.match(os.path.basename(stem))
+        entry["finished"] = bool(done)
+        if done:
+            entry["finished_by"] = "pixinsight" if done.group(2) else "siril"
         result.append(entry)
     if source == "r:" or group in RESULT_FOLDERS:
         result.sort(key=lambda e: -e["mtime"])                  # Ergebnisse: neueste zuerst
@@ -284,12 +298,12 @@ def thumbnail(out, rel, size=THUMB):
     k = kind_of(path)
     cache_dir = os.path.join(os.path.realpath(out), ".vorschau", "thumbs")
     key = hashlib.sha1(("%s|%s|%d" % (path, os.path.getmtime(path), size)).encode()).hexdigest()[:20]
-    cached = os.path.join(cache_dir, key + (".png" if k == "fits" else ".jpg"))
+    cached = os.path.join(cache_dir, key + (".png" if k in DATA_KINDS else ".jpg"))
     if os.path.isfile(cached):
         with open(cached, "rb") as f:
             return f.read(), "image/png" if cached.endswith(".png") else "image/jpeg"
     os.makedirs(cache_dir, exist_ok=True)
-    if k == "fits":
+    if k in DATA_KINDS:
         data = _fits_preview(path, size)
         with open(cached, "wb") as f:
             f.write(data)
@@ -308,7 +322,7 @@ def _fits_preview(path, size):
         raise ValueError(problem)
     import livestack
     np = imaging.np
-    data, header = imaging.read_fits(path)
+    data, header = imaging.read_image(path)
     if data.ndim == 2:                               # Masters: CFA → Superpixel, Helligkeit gleich in allen Kanälen
         h, w = data.shape[0] // 2 * 2, data.shape[1] // 2 * 2
         g = data[:h, :w].reshape(h // 2, 2, w // 2, 2).mean((1, 3))
@@ -503,20 +517,22 @@ def session_summary(out, session, library):
         check["stale"] = sorted(fr["name"] for fr in check["frames"]) != names
     except (OSError, ValueError, KeyError):
         check = None
-    results = [it for it in items(out, "s:" + session, "siril") if it["kind"] == "fits"] if os.path.isdir(
-        os.path.join(base, "siril")) else []
-    results += [it for it in items(out, "s:" + session, "livestack") if it["kind"] == "fits"] if os.path.isdir(
-        os.path.join(base, "livestack")) else []
+    results = []
+    for folder in RESULT_FOLDERS:
+        if os.path.isdir(os.path.join(base, folder)):
+            results += [it for it in items(out, "s:" + session, folder) if it["kind"] in DATA_KINDS]
     results.sort(key=lambda e: -e["mtime"])
-    finished = {}
+    finished = {}                                    # Name des Stapels → [(JPEG, Zeit, Programm)]
     for folder in RESULT_FOLDERS:
         for p in _files(os.path.join(base, folder)):
-            stem = os.path.splitext(os.path.basename(p))[0]
-            if stem.endswith(FINISH_SUFFIX) and kind_of(p) == "jpeg":
-                finished[stem[:-len(FINISH_SUFFIX)]] = (rel_of(out, p), os.path.getmtime(p))
+            done = FINISHED.match(os.path.splitext(os.path.basename(p))[0])
+            if done and kind_of(p) == "jpeg":
+                finished.setdefault(done.group(1), []).append(
+                    (rel_of(out, p), os.path.getmtime(p), "pixinsight" if done.group(2) else "siril"))
     for r in results:                                # nur, wenn nach dem Stapel entwickelt (gleicher Name möglich)
-        hit = finished.get(r["name"])
-        r["finished_jpg"] = hit[0] if hit and hit[1] >= r["mtime"] - 1 else None
+        hits = sorted((h for h in finished.get(r["name"], []) if h[1] >= r["mtime"] - 1), key=lambda h: -h[1])
+        r["finished_jpg"] = hits[0][0] if hits else None
+        r["finished_by"] = sorted({h[2] for h in hits})
     return {"session": session, "lights": len(lights), "lights_raw": sum(kind_of(p) == "raw" for p in lights),
             "calib": cal, "hints": hints, "check": check, "results": results[:8],
             "pixinsight": os.path.isdir(os.path.join(base, "pixinsight"))}
@@ -685,20 +701,49 @@ def wbpp_type(path):
     return {"DARKS": "DARK", "FLATS": "FLAT", "LIGHTS": "LIGHT"}.get(word, word)
 
 
+EXPORT_INPUT = "Rohbilder"                      # in pixinsight/: das Ziel für „+ Directory“ in WBPP
+
+
+def _export_files():
+    return ["bilder.csv"] + [t["folder"] + ".txt" for t in astro.FRAME_TYPES.values()]
+
+
+def _refresh_export(dest):
+    """pixinsight/ für einen neuen Export: Rohbilder/ (Verknüpfungen, Listen) und LIESMICH.txt des letzten Exports
+    weg – Ergebnisse (wbpp_*.xisf, fertig entwickelte Bilder) und der WBPP-Arbeitsordner wbpp/ bleiben. Räumt auch
+    die Ordner früherer Versionen auf (Light/ Dark/ Flat/ Bias/ direkt in pixinsight/)."""
+    if os.path.isdir(dest):
+        if not os.path.isfile(os.path.join(dest, EXPORT_MARK)):
+            raise ValueError("%s gibt es schon und stammt nicht von 6D Studio – bitte umbenennen" % dest)
+        for name in [EXPORT_INPUT] + sorted(set(WBPP_FOLDERS.values())):
+            if os.path.isdir(os.path.join(dest, name)):
+                shutil.rmtree(os.path.join(dest, name))            # nur Verknüpfungen – die Rohbilder bleiben
+        for name in _export_files() + ["LIESMICH.txt"]:
+            if os.path.isfile(os.path.join(dest, name)):
+                os.remove(os.path.join(dest, name))
+    else:
+        os.makedirs(dest)
+    with open(os.path.join(dest, EXPORT_MARK), "w") as f:
+        f.write("Von 6D Studio erzeugt – Rohbilder/ und LIESMICH.txt werden beim nächsten Export ersetzt, "
+                "Ergebnisse und wbpp/ bleiben.\n")
+
+
 def export_pixinsight(out, session, library):
-    """<Sitzung>/pixinsight/: Light/ Dark/ Flat/ Bias/ (harte Verknüpfungen, kein zusätzlicher Platz), Listen der
-    Originalpfade je Typ, bilder.csv und LIESMICH.txt. In WBPP: „+ Directory“ auf den Ordner."""
+    """<Sitzung>/pixinsight/Rohbilder/: Light/ Dark/ Flat/ Bias/ (harte Verknüpfungen, kein zusätzlicher Platz),
+    Listen der Originalpfade je Typ und bilder.csv; LIESMICH.txt in pixinsight/. In WBPP: „+ Directory“ auf
+    Rohbilder – nicht auf pixinsight/, dort liegen auch die Ergebnisse und Masters von WBPP."""
     base = session_path(out, session)
     dest = os.path.join(base, "pixinsight")
+    inp = os.path.join(dest, EXPORT_INPUT)
     sets = frame_sets(out, session, library)
     if not sets["light"]["files"]:
         raise ValueError("Keine Lights in %s" % session)
-    _fresh_dir(dest)
+    _refresh_export(dest)
     counts, rows = {}, []
     for ftype, s in sets.items():
         if not s["files"]:
             continue
-        sub = os.path.join(dest, WBPP_FOLDERS[ftype])
+        sub = os.path.join(inp, WBPP_FOLDERS[ftype])
         os.makedirs(sub, exist_ok=True)
         for p in s["files"]:
             _link(p, os.path.join(sub, wbpp_name(p, ftype)))
@@ -707,20 +752,27 @@ def export_pixinsight(out, session, library):
                          "belichtung_s": m.get("exposure") or "", "temp_c": m.get("temp") if m.get("temp") is not None
                          else "", "blende": m.get("fnumber") or "", "brennweite_mm": m.get("focal") or "",
                          "objektiv": m.get("lens") or "", "herkunft": s["from"] or session})
-        with open(os.path.join(dest, astro.FRAME_TYPES[ftype]["folder"] + ".txt"), "w") as f:
+        with open(os.path.join(inp, astro.FRAME_TYPES[ftype]["folder"] + ".txt"), "w") as f:
             f.write("\n".join(s["files"]) + "\n")
         counts[ftype] = len(s["files"])
-    with open(os.path.join(dest, "bilder.csv"), "w", newline="", encoding="utf-8") as f:
+    with open(os.path.join(inp, "bilder.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0]))
         w.writeheader()
         w.writerows(rows)
     notes = ["PixInsight – Weighted Batch Preprocessing (WBPP) für %s" % session, "",
+             "Im Studio: Bilder → Sitzung → „Mit PixInsight stapeln“ macht alles Folgende ohne Oberfläche.", "",
+             "Von Hand:",
              "1. Script → Batch Processing → WeightedBatchPreprocessing",
-             "2. „+ Directory“ und diesen Ordner wählen – WBPP erkennt Light, Dark, Flat und Bias am Dateinamen",
-             "   (die Rohbilder sind nur verknüpft, nicht kopiert).",
+             "2. „+ Directory“ und den Ordner %s wählen – WBPP erkennt Light, Dark, Flat und Bias am" % EXPORT_INPUT,
+             "   Dateinamen (die Rohbilder sind nur verknüpft, nicht kopiert). Nicht diesen ganzen Ordner: hier",
+             "   liegen auch Ergebnisse (wbpp_*.xisf) und Masters (wbpp/master) früherer Läufe.",
              "3. Lights-Reiter: CFA images an, Debayer-Muster Auto (Canon EOS 6D: RGGB).",
              "4. Dark-Flats liegen bei den Darks – WBPP ordnet sie über die Belichtungszeit den Flats zu.",
-             "5. Run.", "", "Enthalten:"]
+             "5. Run.", "",
+             "Ordner:",
+             "  %-14s Verknüpfungen auf die Rohbilder, Listen (*.txt), bilder.csv" % (EXPORT_INPUT + "/"),
+             "  %-14s Arbeitsordner von WBPP im Studio: master/ (Masters), logs/ (Protokolle)" % (WBPP_DIR + "/"),
+             "  %-14s Ergebnis von WBPP, *_fertig-pi.* fertig entwickelt" % "wbpp_*.xisf", "", "Enthalten:"]
     for ftype, n in counts.items():
         s = sets[ftype]
         notes.append("  %-9s %3d Bilder%s%s" % (WBPP_FOLDERS[ftype] if ftype != "darkflat" else "Dark-Flat", n,
@@ -735,8 +787,223 @@ def export_pixinsight(out, session, library):
                                              "XISF" % m["name"] if m else ""))
     with open(os.path.join(dest, "LIESMICH.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(notes) + "\n")
-    return {"folder": dest, "counts": counts, "skipped": {t: s["skipped"] for t, s in sets.items() if s["skipped"]},
-            "from": {t: s["from"] for t, s in sets.items() if s["from"]}}
+    return {"folder": dest, "input": inp, "counts": counts,
+            "skipped": {t: s["skipped"] for t, s in sets.items() if s["skipped"]},
+            "from": {t: s["from"] for t, s in sets.items() if s["from"]},
+            "lights_raw": sum(kind_of(p) == "raw" for p in sets["light"]["files"])}
+
+
+# ---------------------------------------------------------------- PixInsight ohne Oberfläche
+# Das Studio startet PixInsight als neue Instanz im Automatikbetrieb (Kommandozeile siehe pi_command) und liest
+# den Fortschritt von der Standardausgabe: Zeilen, die mit PI_MARK beginnen, schreiben die Skripte in
+# studio/pixinsight/ (WBPP: Ereignisskript; Fertig entwickeln: 6d-fertig.js).
+PI_SCRIPTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pixinsight")
+PI_EVENTS = os.path.join(PI_SCRIPTS, "6d-wbpp-ereignisse.js")
+PI_FINISH = os.path.join(PI_SCRIPTS, "6d-fertig.js")
+PI_MARK = "6D>> "
+WBPP_DIR = "wbpp"                                # Arbeitsordner von WBPP in pixinsight/
+WBPP_KEEP = ("master", "logs")                   # bleiben nach dem Lauf: Masters der Kalibrierbilder, Protokolle
+WBPP_RESULT = re.compile(r"^wbpp_(\d+)x([0-9.]+)s(?=[_.]|$)")
+WBPP_FAILED = (3, 4)                             # OperationBlockStatus: FAILED, CANCELED (BPP-OperationQueue.js)
+# Der Automatikbetrieb liest die Einstellungen der WBPP-Oberfläche nicht, es gelten die Voreinstellungen von WBPP
+# (Gewichtung PSF Signal, lokale Normalisierung, Autocrop, Debayer-Muster aus der RAW) – bis auf diese:
+WBPP_OPTIONS = ("platesolve=false",)             # Astrometrie braucht die Gaia-Datenbank, sonst schlägt sie fehl
+WBPP_LABELS = {"Debayer": "Debayern", "Measurements": "Bilder bewerten", "Weights generation": "Gewichte berechnen",
+               "Bad frames rejection": "Schlechte Bilder aussortieren", "Frame selection": "Bilder auswählen",
+               "Reference frame data preparation": "Referenzbild vorbereiten",
+               "Reference frame selection": "Referenzbild wählen", "Registration": "Ausrichten",
+               "LN reference generation": "Referenz für lokale Normalisierung",
+               "Local Normalization": "Lokal normalisieren", "Autocrop": "Ränder beschneiden",
+               "Astrometric solution": "Astrometrie", "Cosmetic Correction": "Hotpixel entfernen",
+               "LPS": "Streifen entfernen", "FastIntegration": "Schnell stapeln", "Fast Integration": "Schnell stapeln",
+               "Drizzle Integration": "Drizzle", "RGB Combination": "Farbkanäle zusammensetzen"}
+FINISHED = re.compile(r"^(.*)_fertig(-pi)?$")    # <Stapel>_fertig (Siril) bzw. <Stapel>_fertig-pi (PixInsight)
+PI_FINISH_SUFFIX = "_fertig-pi"
+PI_FINISH_STEPS = ("Bild laden", "Hintergrund und Gradient entfernen", "Farben kalibrieren", "Strecken",
+                   "Grünstich entfernen", "Speichern")                  # wie in 6d-fertig.js
+
+
+def pixinsight_cli(found=None):
+    """Programmdatei von PixInsight (macOS: PixInsight.app/Contents/MacOS/PixInsight)."""
+    found = find_tools() if found is None else found
+    app = found.get("pixinsight")
+    exe = os.path.join(app, "Contents", "MacOS", "PixInsight") if app else None
+    return exe if exe and os.path.isfile(exe) else None
+
+
+def pixinsight_root(exe):
+    """Installationsordner: …/PixInsight/PixInsight.app/Contents/MacOS/PixInsight → …/PixInsight (macOS),
+    /opt/PixInsight/bin/PixInsight → /opt/PixInsight (Linux)."""
+    d = os.path.dirname(exe)
+    if d.endswith(os.path.join("Contents", "MacOS")):
+        return os.path.dirname(os.path.dirname(os.path.dirname(d)))
+    return os.path.dirname(d)
+
+
+def wbpp_script(exe):
+    p = os.path.join(pixinsight_root(exe), "src", "scripts", "BatchPreprocessing", "WBPP.js") if exe else ""
+    return p if os.path.isfile(p) else None
+
+
+def pi_command(exe, script, args):
+    """Skript in einer neuen PixInsight-Instanz ohne Oberfläche und ohne den Fokus zu nehmen; PixInsight beendet
+    sich danach (laut doc/docs/CommandLineInterface). Die Argumente trennt PixInsight am Komma (jsArguments)."""
+    for a in [script] + list(args):
+        if "," in a:
+            raise ValueError("PixInsight trennt die Angaben für Skripte am Komma – bitte Ordner ohne Komma: %s" % a)
+    return [exe, "-n", "--automation-mode", "--no-focus-stealing", "-r=" + ",".join([script] + list(args)),
+            "--force-exit"]
+
+
+def prepare_wbpp(out, session, library, exe):
+    """Für PixInsight exportieren und die WBPP-Kommandozeile bauen: Eingang pixinsight/Rohbilder (dir= liest
+    rekursiv – deshalb nicht pixinsight/ selbst, sonst sähe WBPP auch wbpp/ und frühere Ergebnisse), Ausgabe nach
+    pixinsight/wbpp/."""
+    script = wbpp_script(exe)
+    if not script:
+        raise ValueError("WBPP nicht gefunden – PixInsight 1.9.6 oder neuer nötig")
+    res = export_pixinsight(out, session, library)
+    if not res["lights_raw"]:
+        raise ValueError("Keine RAW-Lights in %s – WBPP braucht RAWs" % session)
+    dest = res["folder"]
+    wbpp = os.path.join(dest, WBPP_DIR)
+    os.makedirs(wbpp, exist_ok=True)
+    args = ["automationMode=true", "dir=" + res["input"], "outputDirectory=" + wbpp, "usePipelineScript=true",
+            "pipelineScriptFile=" + PI_EVENTS] + list(WBPP_OPTIONS)
+    return {"folder": dest, "out": wbpp, "command": pi_command(exe, script, args), "counts": res["counts"],
+            "lights": res["counts"].get("light", 0),
+            "calib": sum(n for t, n in res["counts"].items() if t != "light")}
+
+
+def pi_event(line):
+    """Zeile der Standardausgabe von PixInsight → Ereignis (dict) oder None. WBPP (6d-wbpp-ereignisse.js):
+    pipeline, start, done, end; Fertig entwickeln (6d-fertig.js): step, saved, fertig, error."""
+    line = line.strip()
+    if not line.startswith(PI_MARK):
+        return None
+    word, _, rest = line[len(PI_MARK):].partition(" ")
+    if word == "pipeline":
+        return {"event": word, "count": int(rest)} if rest.strip().isdigit() else None
+    if word in ("start", "done"):
+        parts = [p.strip() for p in rest.split(" | ")]
+        m = re.match(r"(\d+)/(\d+) (.+)$", parts[0])
+        if not m:
+            return None
+        ev = {"event": word, "index": int(m.group(1)), "count": int(m.group(2)), "name": m.group(3).strip(),
+              "group": parts[1] if len(parts) > 1 else ""}
+        if word == "done":
+            ev["status"] = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+            ev["message"] = parts[3] if len(parts) > 3 else ""
+            ev["failed"] = ev["status"] in WBPP_FAILED
+        return ev
+    return {"event": word, "text": rest.strip()}
+
+
+def wbpp_label(name, group=""):
+    """Schritt von WBPP auf Deutsch – „Integration“ mit der Bildgruppe („Dark frames, …“ → Master-Dark erzeugen)."""
+    kind = group.split(",")[0].split(" ")[0] if group else ""
+    if name == "Integration":
+        return "Lights stapeln" if kind == "Light" else "Master-%s erzeugen" % kind if kind else "Stapeln"
+    if name == "Calibration":
+        return {"Light": "Lights kalibrieren", "Flat": "Flats kalibrieren"}.get(kind, "Kalibrieren")
+    return WBPP_LABELS.get(name, name)
+
+
+def wbpp_detail(group):
+    """Bildgruppe von WBPP kurz: „Light frames, 5496x3670, NoFilter, CFA, 1x1, 3.20s, frames = 8 (8 active)“ →
+    „8 Lights · 3.2 s“."""
+    if not group:
+        return ""
+    kind = group.split(",")[0].split(" ")[0]
+    n = re.search(r"frames = (\d+)", group)
+    exp = re.search(r",\s*([0-9.]+)s\b", group)
+    parts = ["%s %s" % (n.group(1), {"Light": "Lights", "Dark": "Darks", "Flat": "Flats"}.get(kind, kind))
+             if n else kind]
+    if exp and float(exp.group(1)) >= 0.01:          # Bias: WBPP rundet 1/4000 s auf „0.00s“
+        parts.append("%g s" % float(exp.group(1)))
+    return " · ".join(parts)
+
+
+def wbpp_problem(wbpp, since):
+    """Fehlerzeilen aus dem neuesten WBPP-Protokoll (logs/*.log) seit since – wenn WBPP gar nicht erst anfängt
+    (z. B. Fehler in der Prüfung vor dem Lauf), steht der Grund nur dort."""
+    logs = os.path.join(wbpp, "logs")
+    files = [os.path.join(logs, n) for n in os.listdir(logs) if n.endswith(".log")] if os.path.isdir(logs) else []
+    files = [p for p in files if os.path.getmtime(p) >= since - 1]
+    if not files:
+        return ""
+    with open(max(files, key=os.path.getmtime), encoding="utf-8", errors="replace") as f:
+        errors = [re.sub(r"^\[[^\]]*\]\s*", "", line).strip() for line in f if "*** Error" in line]
+    return " · ".join(re.sub(r"<[^>]+>", "", e) for e in errors[:2])
+
+
+def _tree_size(path):
+    if os.path.isfile(path):
+        return os.path.getsize(path)
+    total = 0
+    for root, _, files in os.walk(path):
+        for n in files:
+            try:
+                total += os.path.getsize(os.path.join(root, n))
+            except OSError:
+                pass
+    return total
+
+
+def collect_wbpp(dest, since, lights=None):
+    """Nach WBPP: das Master-Light (beschnitten, sonst das ganze) wird pixinsight/wbpp_<n>x<Zeit>s.xisf; die
+    Zwischenbilder in wbpp/ (calibrated, debayered, registered … – je Light der 6D rund 300 MB) und das
+    unbeschnittene Master mit den Ausreißerkarten werden gelöscht. Masters der Kalibrierbilder und Protokolle
+    bleiben. → (Pfad des Ergebnisses, freigegebene Bytes)"""
+    wbpp = os.path.join(dest, WBPP_DIR)
+    master = os.path.join(wbpp, "master")
+    found = [os.path.join(master, n) for n in os.listdir(master)
+             if n.startswith("masterLight") and n.lower().endswith(".xisf")] if os.path.isdir(master) else []
+    found = [p for p in found if os.path.getmtime(p) >= since - 1]
+    if not found:
+        why = wbpp_problem(wbpp, since)
+        raise ValueError("WBPP hat kein Master-Light erzeugt" + (": " + why if why else
+                                                                 " – Protokoll in pixinsight/wbpp/logs"))
+    found.sort(key=lambda p: ("_autocrop" not in os.path.basename(p), -os.path.getmtime(p)))
+    best = found[0]
+    header, _ = imaging.image_header(best)
+    n = lights or len(_files(os.path.join(dest, EXPORT_INPUT, WBPP_FOLDERS["light"])))
+    result = os.path.join(dest, "wbpp_%dx%gs.xisf" % (n, round(float(header.get("EXPTIME") or 0), 1)))
+    os.replace(best, result)
+    drop = [p for p in found[1:] if os.path.basename(p).replace("_autocrop", "") ==
+            os.path.basename(best).replace("_autocrop", "")]        # das unbeschnittene Gegenstück desselben Stapels
+    drop += [os.path.join(master, n) for n in os.listdir(master) if n.startswith("LN_Reference")]
+    drop += [os.path.join(wbpp, n) for n in os.listdir(wbpp) if n not in WBPP_KEEP]
+    freed = 0
+    for p in drop:
+        freed += _tree_size(p)
+        if os.path.isdir(p):
+            shutil.rmtree(p)
+        else:
+            os.remove(p)
+    return result, freed
+
+
+def _finish_source(out, rel):
+    """Gestapeltes, farbiges Bild für „Fertig entwickeln“ (beide Programme) → absoluter Pfad."""
+    path = safe_path(out, rel)
+    if kind_of(path) not in DATA_KINDS or not os.path.isfile(path):
+        raise ValueError("Fertig entwickeln geht mit gestapelten Bildern (FITS oder XISF: Live-Stack, Siril, "
+                         "PixInsight)")
+    if "/Bibliothek/" in path.replace(os.sep, "/"):
+        raise ValueError("Masters der Bibliothek sind Kalibrierbilder, keine Ergebnisse")
+    _, channels = imaging.image_header(path)
+    if channels != 3:
+        raise ValueError("Nur farbige (debayerte) Stapel lassen sich fertig entwickeln")
+    return path
+
+
+def prepare_pi_finish(out, rel, exe):
+    """Fertig entwickeln mit PixInsight (6d-fertig.js) → <Stapel>_fertig-pi.jpg und .tif daneben."""
+    path = _finish_source(out, rel)
+    target = os.path.splitext(path)[0] + PI_FINISH_SUFFIX
+    return {"folder": os.path.dirname(path), "command": pi_command(exe, PI_FINISH, [path, target]),
+            "steps": list(PI_FINISH_STEPS), "outputs": [target + ".jpg", target + ".tif"]}
 
 
 # ---------------------------------------------------------------- Siril
@@ -886,16 +1153,11 @@ def finish_script(name, out_name):
 
 
 def prepare_finish(out, rel):
-    """Gestapeltes Bild (Live-Stack- oder Siril-FITS) für das Fertig-Skript vorbereiten. → Infos mit Skript."""
-    path = safe_path(out, rel)
-    if kind_of(path) != "fits" or not os.path.isfile(path):
-        raise ValueError("Fertig entwickeln geht mit gestapelten FITS (Live-Stack oder Siril-Ergebnis)")
-    if "/Bibliothek/" in path.replace(os.sep, "/"):
-        raise ValueError("Masters der Bibliothek sind Kalibrierbilder, keine Ergebnisse")
-    h, _ = imaging.read_fits_header(path)
-    if h.get("NAXIS") != 3:
-        raise ValueError("Nur farbige (debayerte) Stapel lassen sich fertig entwickeln")
-    imaging.to_bottom_up(path)                       # ältere Live-Stacks: sonst steht das Ergebnis auf dem Kopf
+    """Gestapeltes Bild (Live-Stack-, Siril-FITS oder WBPP-XISF – Siril 1.4 liest XISF) für das Fertig-Skript von
+    Siril vorbereiten. → Infos mit Skript."""
+    path = _finish_source(out, rel)
+    if kind_of(path) == "fits":
+        imaging.to_bottom_up(path)                   # ältere Live-Stacks: sonst steht das Ergebnis auf dem Kopf
     folder, name = os.path.split(path)
     stem = os.path.splitext(name)[0]
     script = finish_script(name, stem + FINISH_SUFFIX)
