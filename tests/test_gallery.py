@@ -550,6 +550,50 @@ class TestPixInsight(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No light frames found"):
             gallery.collect_wbpp(dest, time.time())
 
+    def test_wbpp_absturz_bei_lokaler_normalisierung(self):
+        """PixInsight 1.9.6 stürzte einmal mitten in der lokalen Normalisierung ab (SIGABRT). Dann: Zwischenbilder
+        weg, noch einmal ohne lokale Normalisierung, Warnung im Auftrag. Andere Abstürze werden gemeldet."""
+        dest = os.path.join(self.a.base, "pixinsight")
+        wbpp = os.path.join(dest, "wbpp")
+        for old in ("master/masterDark_x.xisf", "registered/a.xisf", "logs/alt.log"):   # von einem früheren Lauf
+            os.makedirs(os.path.dirname(os.path.join(wbpp, old)), exist_ok=True)
+            open(os.path.join(wbpp, old), "w").close()
+        calls = []
+
+        def pixinsight(command, handle, crash_at="Local Normalization"):
+            run_arg = next(a for a in command if a.startswith("-r="))
+            calls.append(run_arg)
+            self.assertEqual(sorted(os.listdir(wbpp)), ["logs"])          # vor jedem Lauf leer, Protokolle bleiben
+            handle({"event": "pipeline", "count": 3})
+            os.makedirs(os.path.join(wbpp, "registered"), exist_ok=True)
+            open(os.path.join(wbpp, "registered", "b.xisf"), "w").close()
+            if gallery.WBPP_NO_LN not in run_arg:
+                handle({"event": "start", "index": 2, "count": 3, "name": crash_at, "group": LIGHTS})
+                return -6                                               # SIGABRT
+            os.makedirs(os.path.join(wbpp, "master"), exist_ok=True)
+            self.write_xisf(os.path.join(wbpp, "master", "masterLight_RGB_autocrop.xisf"), self.rgb,
+                            [("EXPTIME", "3.200")])
+            handle({"event": "done", "index": 3, "count": 3, "name": "Integration", "group": LIGHTS, "status": 2,
+                    "message": "8 integrated", "failed": False})
+            handle({"event": "end", "text": ""})
+            return 0
+
+        job = {"warnings": []}
+        path = gallery.run_wbpp(["pi", "-n", "--automation-mode", "--no-focus-stealing", "-r=WBPP.js,a=1",
+                                 "--force-exit"], dest, job, run=pixinsight)
+        self.assertEqual(path, os.path.join(dest, "wbpp_8x3.2s.xisf"))
+        self.assertEqual(calls, ["-r=WBPP.js,a=1", "-r=WBPP.js,a=1,localNormalization=false"])
+        self.assertEqual(job["warnings"], ["PixInsight stürzte bei „Lokal normalisieren“ ab – noch einmal ohne "
+                                           "lokale Normalisierung gestapelt"])
+        self.assertEqual(sorted(os.listdir(wbpp)), ["logs", "master"])     # alter Master und Zwischenbilder weg
+        self.assertEqual(os.listdir(os.path.join(wbpp, "logs")), ["alt.log"])
+        calls.clear()
+        with self.assertRaisesRegex(gallery.PixInsightCrash, "bei „Ausrichten“ abgestürzt \\(Signal 6\\)"):
+            gallery.run_wbpp(["pi", "-r=WBPP.js"], dest, {"warnings": []},
+                             run=lambda c, h: pixinsight(c, h, crash_at="Registration"))
+        self.assertEqual(len(calls), 1)                                 # kein zweiter Versuch
+        self.assertEqual(os.listdir(wbpp), ["logs"])                    # Zwischenbilder des Absturzes weg
+
     def test_fertig_entwickeln_mit_pixinsight_und_siril(self):
         _, exe = fake_pixinsight(tempfile.mkdtemp(dir=self.a.out))
         folder = os.path.join(os.path.realpath(self.a.base), "pixinsight")       # /var → /private/var (macOS)

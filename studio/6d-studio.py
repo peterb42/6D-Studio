@@ -52,6 +52,7 @@ CAM_IP = sys.argv[1] if len(sys.argv) > 1 else _default_ip()
 CAM_PORT = int(os.environ.get("CAM_PORT", "15740"))         # PTP/IP-Port der Kamera
 GPHOTO_PORT = int(os.environ.get("GPHOTO_PORT", "15740"))   # lokaler Zugang für gphoto2 (127.0.0.1)
 WEB_PORT = int(os.environ.get("STUDIO_PORT", "8066"))
+RECHNER_LIVE_EVERY = 20.0                                     # s: neue Rohbilder zum Rechner (wenn eingeschaltet)
 OUT = os.path.expanduser(os.environ.get("OUT", "~/Pictures/6D-Tethering"))
 DEFAULT_OUT = os.path.expanduser("~/Pictures/6D-Tethering")   # Kamera-Ablage (Simulator: …/Simulator)
 PREVIEW_DIR = os.path.join(OUT, ".vorschau")
@@ -65,6 +66,7 @@ import calib  # noqa: E402
 import gallery  # noqa: E402
 import imaging  # noqa: E402
 import livestack  # noqa: E402
+import rechner  # noqa: E402
 
 LIBRARY_DIR = os.path.join(ASTRO_DIR, calib.LIBRARY_FOLDER)
 DOWNLOAD_MODES = ("all", "raw", "jpeg", "none")    # was eine Serie auf den Mac lädt
@@ -343,6 +345,12 @@ class Studio:
         self.last_flat = None               # ISO, Zeit (Median), Blende, Helligkeit der letzten Flats (für Dark-Flats)
         self.gallery_job = None             # Auftrag der Nachbearbeitung (Prüfen, Siril)
         self._libraries = {}                # Bibliotheken weiterer Ablagen (Bildverwaltung)
+        # Rechner (rechner/6d-rechner.py): Einstellungen, letzter Zustand, Vorab-Hochladen während der Serie
+        self.rechner_cfg = rechner.load_config()
+        self._rechner_cache = {"t": 0.0, "url": None, "status": None, "error": None}
+        self._rechner_known = {}            # Sitzung auf dem Rechner → {Pfad: {size}} (was schon oben ist)
+        self._rechner_sync_lock = threading.Lock()
+        self.rechner_live = None            # {session, uploaded, total, time, error}
         # Verbindung
         self.cam_cmd = self.cam_evt = None
         self.cli_cmd = self.cli_evt = None
@@ -1217,7 +1225,7 @@ class Studio:
         return {"roots": [dict(r, path=r["path"].replace(home, "~"), index=gallery.index(r["path"]))
                           for r in self.gallery_roots()],
                 "tools": gallery.tools_info(found), "siril": bool(gallery.siril_cli(found)),
-                "pixinsight": bool(pi), "wbpp": bool(pi and gallery.wbpp_script(pi)),
+                "pixinsight": bool(pi), "wbpp": bool(pi and gallery.wbpp_script(pi)), "rechner": self.rechner_info(),
                 "frame_types": {k: v["label"] for k, v in astro.FRAME_TYPES.items()}}
 
     def gallery_session(self, root, session):
@@ -1329,19 +1337,6 @@ class Studio:
         if rc != 0:
             raise RuntimeError("Siril meldet einen Fehler (Code %d): %s" % (rc, last))
 
-    @staticmethod
-    def _pixinsight(command, handle):
-        """PixInsight ohne Oberfläche (gallery.pi_command); jede Zeile „6D>> …“ der Standardausgabe geht als
-        Ereignis an handle. Der Rückgabewert von PixInsight ist auch nach Fehlern im Skript 0 – ob es geklappt hat,
-        sagen die Ereignisse und die Ausgabedateien."""
-        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                              text=True, bufsize=1, errors="replace") as p:
-            for line in p.stdout:
-                ev = gallery.pi_event(line)
-                if ev:
-                    handle(ev)
-            return p.wait()
-
     def _tool(self, body):
         tool = body.get("tool") or "siril"
         if tool == "siril":
@@ -1350,6 +1345,8 @@ class Studio:
         elif tool == "pixinsight":
             if not gallery.pixinsight_cli():
                 raise CameraError("PixInsight ist nicht installiert (pixinsight.com)")
+        elif tool == "rechner":
+            self._rechner_client()
         else:
             raise CameraError("Unbekanntes Programm: %s" % tool)
         return tool
@@ -1369,8 +1366,11 @@ class Studio:
     def act_gallery_stack(self, body):
         """Mit Siril oder PixInsight (WBPP) vorverarbeiten und stapeln; danach die Zwischenbilder löschen."""
         out, session = self._root(body.get("root")), body.get("session")
-        if self._tool(body) == "pixinsight":
+        tool = self._tool(body)
+        if tool == "pixinsight":
             return self._stack_pixinsight(out, session, body.get("root"))
+        if tool == "rechner":
+            return self._stack_rechner(out, session, body.get("root"))
 
         def work(job):
             res = gallery.prepare_siril(out, session, self._library_for(out))
@@ -1400,25 +1400,8 @@ class Studio:
             job["step"] = "PixInsight startet, WBPP prüft die Bilder"
             t0 = time.time()
             self.log("▶︎ PixInsight (WBPP) stapelt %d Lights von %s" % (res["lights"], session))
-            state = {"lights": None, "labels": {}}
-
-            def on(ev):
-                if ev["event"] == "pipeline":
-                    job["steps"] = [""] * ev["count"]
-                elif ev["event"] == "start":
-                    label = gallery.wbpp_label(ev["name"], ev["group"])
-                    state["labels"][ev["index"]] = label
-                    job.update(index=ev["index"], step=label, percent=0.0, detail=gallery.wbpp_detail(ev["group"]))
-                elif ev["event"] == "done":
-                    label = state["labels"].get(ev["index"]) or gallery.wbpp_label(ev["name"], ev["group"])
-                    if ev["failed"]:
-                        job["warnings"].append("%s: %s" % (label, ev["message"] or "fehlgeschlagen"))
-                    m = re.match(r"(\d+) integrated", ev["message"])
-                    if ev["name"] == "Integration" and ev["group"].startswith("Light") and m:
-                        state["lights"] = int(m.group(1))
-            self._pixinsight(res["command"], on)
             try:
-                path, job["freed"] = gallery.collect_wbpp(res["folder"], t0, state["lights"])
+                path = gallery.run_wbpp(res["command"], res["folder"], job)
             except (ValueError, OSError) as e:
                 raise RuntimeError(str(e)) from None
             job["result"] = gallery.rel_of(out, path)
@@ -1431,6 +1414,8 @@ class Studio:
         """Gestapeltes Bild mit Siril oder PixInsight fertig entwickeln → JPEG und 16-Bit-TIFF daneben."""
         out, rel = self._root(body.get("root")), body.get("rel")
         tool = self._tool(body)
+        if tool == "rechner":
+            return self._finish_rechner(out, rel, body.get("root"))
         try:
             res = (gallery.prepare_pi_finish(out, rel, gallery.pixinsight_cli()) if tool == "pixinsight"
                    else gallery.prepare_finish(out, rel))
@@ -1443,22 +1428,11 @@ class Studio:
             job["steps"] = res["steps"]
             t0 = time.time()
             if tool == "pixinsight":
-                problem = []
-
-                def on(ev):
-                    if ev["event"] == "step":
-                        job.update(index=job["index"] + 1, step=ev["text"], percent=0.0)
-                    elif ev["event"] == "saved":
-                        job["detail"] = os.path.basename(ev["text"])
-                    elif ev["event"] == "error":
-                        problem.append(ev["text"])
-                self._pixinsight(res["command"], on)
-                if problem:
-                    raise RuntimeError("PixInsight: %s" % problem[0])
+                done = gallery.run_pi_finish(res["command"], res["outputs"], job)
             else:
                 self._siril(job, res["folder"], res["script"])
                 os.remove(res["script"])
-            done = [p for p in res["outputs"] if os.path.isfile(p) and os.path.getmtime(p) >= t0 - 1]
+                done = [p for p in res["outputs"] if os.path.isfile(p) and os.path.getmtime(p) >= t0 - 1]
             if not done:                             # ältere Ergebnisse gleichen Namens zählen nicht
                 raise RuntimeError("%s lief durch, aber es gibt kein fertiges Bild" % name)
             job["results"] = [gallery.rel_of(out, p) for p in done]
@@ -1466,6 +1440,194 @@ class Studio:
             self.log("✔︎ Fertig entwickelt (%s): %s" % (name, ", ".join(os.path.basename(p) for p in done)))
         self._start_job("finish", "Mit %s entwickeln" % name, body.get("root"),
                         parts[1] if len(parts) > 2 and parts[0] == "Astro" else None, work, tool=tool)
+
+    # ---------- Rechner: PixInsight auf einem zweiten Rechner (rechner.py, rechner/6d-rechner.py)
+    def _rechner_client(self):
+        cfg = self.rechner_cfg
+        if not cfg["url"] or not cfg["token"]:
+            raise CameraError("Rechner nicht eingerichtet – Adresse und Schlüssel unter „Rechner ⚙︎“ eintragen")
+        return rechner.Client(cfg["url"], cfg["token"])
+
+    def _root_label(self, out):
+        """Ablage für den Namen der Sitzung auf dem Rechner („Kamera“, „Simulator“)."""
+        for r in self.gallery_roots():
+            if os.path.realpath(r["path"]) == os.path.realpath(out):
+                return r["label"]
+        return "Fotos"
+
+    def rechner_info(self, max_age=15.0, fresh=False):
+        """Einstellungen (ohne Schlüssel) und Zustand des Rechners; die Abfrage wird max_age Sekunden gemerkt –
+        ein nicht erreichbarer Rechner kostet sonst bei jedem Öffnen der Bildverwaltung die Wartezeit."""
+        cfg = self.rechner_cfg
+        info = {"configured": bool(cfg["url"] and cfg["token"]), "url": cfg["url"], "token_set": bool(cfg["token"]),
+                "live": bool(cfg["live"]), "ok": False, "error": None,
+                "live_state": dict(self.rechner_live) if self.rechner_live else None}
+        if not info["configured"]:
+            return info
+        c = self._rechner_cache
+        if fresh or c["url"] != cfg["url"] or time.time() - c["t"] > max_age:
+            try:
+                c.update(status=rechner.Client(cfg["url"], cfg["token"]).status(timeout=2.5), error=None)
+            except rechner.RechnerError as e:
+                c.update(status=None, error=str(e))
+            c.update(t=time.time(), url=cfg["url"])
+        st = c["status"]
+        if st:
+            info.update(ok=True, name=st.get("name"), pixinsight=bool(st.get("pixinsight")),
+                        wbpp=bool(st.get("wbpp")), gpu=st.get("gpu") or [], cpus=st.get("cpus"),
+                        ram_gb=st.get("ram_gb"), free_gb=st.get("free_gb"), busy=bool(st.get("job")))
+        else:
+            info["error"] = c["error"]
+        return info
+
+    def act_rechner_config(self, body):
+        """Adresse, Schlüssel (leer = bleibt) und Vorab-Hochladen speichern, dann den Rechner fragen."""
+        try:
+            url = rechner.normalize_url(body.get("url"))
+        except ValueError as e:
+            raise CameraError(str(e)) from None
+        cfg = dict(self.rechner_cfg, url=url, live=bool(body.get("live")))
+        if body.get("token"):
+            cfg["token"] = str(body["token"]).strip()
+        if not url:
+            cfg["token"] = ""
+        try:
+            rechner.save_config(cfg)
+        except OSError as e:
+            raise CameraError("Einstellungen nicht gespeichert: %s" % e) from None
+        self.rechner_cfg = cfg
+        self._rechner_known.clear()
+        info = self.rechner_info(fresh=True)
+        state = info["name"] if info["ok"] else info["error"]
+        self.log("Rechner: %s" % ("aus" if not url else "%s – %s" % (url, state)))
+        return {"rechner": info}
+
+    def act_rechner_check(self, body):
+        return {"rechner": self.rechner_info(fresh=True)}
+
+    def _rechner_progress(self, job, verb):
+        def up(i, n, sent, total):
+            job.update(step="%s hochladen" % verb if n else "%s abgleichen" % verb,
+                       percent=100.0 * sent / total if total else 100.0,
+                       detail="%d/%d Dateien · %.0f von %.0f MB" % (min(i + 1, n), n, sent / 1e6, total / 1e6)
+                       if n else "alles schon auf dem Rechner")
+        return up
+
+    @staticmethod
+    def _follow(job):
+        """Fortschritt des Auftrags auf dem Rechner in den eigenen übernehmen."""
+        def update(remote):
+            job.update(steps=remote.get("steps") or [], index=remote.get("index") or 0,
+                       step=remote.get("step") or "", detail=remote.get("detail") or "",
+                       percent=remote.get("percent") or 0.0, warnings=list(remote.get("warnings") or []))
+        return update
+
+    def _download(self, client, job, rs, rel, dest):
+        job.update(steps=[], index=0, step="Ergebnis laden", percent=0.0, detail=os.path.basename(rel))
+        client.get(rs, rel, dest, progress=lambda done, size: job.update(
+            percent=100.0 * done / size if size else 0.0,
+            detail="%s · %.0f von %.0f MB" % (os.path.basename(rel), done / 1e6, size / 1e6)))
+        return dest
+
+    def _stack_rechner(self, out, session, root):
+        """Export wie für WBPP, Rohbilder auf den Rechner abgleichen (fehlende hoch, überzählige weg), WBPP dort,
+        Ergebnis nach pixinsight/ zurück."""
+        client = self._rechner_client()
+        rs = rechner.remote_session(self._root_label(out), session)
+
+        def work(job):
+            res = gallery.export_pixinsight(out, session, self._library_for(out))
+            if not res["lights_raw"]:
+                raise RuntimeError("Keine RAW-Lights in %s – WBPP braucht RAWs" % session)
+            t0 = time.time()
+            job["step"] = "Rohbilder abgleichen"
+            with self._rechner_sync_lock:
+                st = rechner.sync(client, rs, rechner.export_files(res["input"]),
+                                  delete_prefix=gallery.EXPORT_INPUT + "/",
+                                  progress=self._rechner_progress(job, "Rohbilder"))
+                self._rechner_known.pop(rs, None)
+            self.log("▶︎ Rechner: %d Rohbilder hochgeladen (%.0f MB), %d schon dort, %d entfernt – WBPP für %s" % (
+                st["uploaded"], st["bytes"] / 1e6, st["kept"], st["deleted"], session))
+            remote = client.wait(client.start("wbpp", rs), self._follow(job))
+            if remote.get("error"):
+                raise RuntimeError("Rechner: %s" % remote["error"])
+            dest = self._download(client, job, rs, remote["result"],
+                                  os.path.join(res["folder"], os.path.basename(remote["result"])))
+            job.update(result=gallery.rel_of(out, dest), freed=remote.get("freed") or 0,
+                       warnings=list(remote.get("warnings") or []))
+            self.log("✔︎ Rechner: %s in %.0f s (WBPP %.0f s)" % (
+                os.path.basename(dest), time.time() - t0, (remote.get("finished") or 0) - (remote.get("started") or 0)))
+        self._start_job("stack", "Auf dem Rechner stapeln", root, session, work, tool="rechner")
+
+    def _finish_rechner(self, out, rel, root):
+        """Stapel hochladen (wenn er nicht schon oben ist), mit PixInsight dort fertig entwickeln, JPEG und TIFF
+        neben den Stapel zurückholen."""
+        client = self._rechner_client()
+        try:
+            path = gallery._finish_source(out, rel)
+        except (ValueError, OSError) as e:
+            raise CameraError(str(e)) from None
+        parts = rel.split("/")
+        session = parts[1] if len(parts) > 2 and parts[0] == "Astro" else None
+        rs = rechner.remote_session(self._root_label(out), session or "Ergebnisse")
+        name = os.path.basename(path)
+
+        def work(job):
+            job["step"] = "Stapel abgleichen"
+            with self._rechner_sync_lock:
+                rechner.sync(client, rs, {name: path}, progress=self._rechner_progress(job, "Stapel"))
+            remote = client.wait(client.start("finish", rs, name), self._follow(job))
+            if remote.get("error"):
+                raise RuntimeError("Rechner: %s" % remote["error"])
+            done = [self._download(client, job, rs, r, os.path.join(os.path.dirname(path), os.path.basename(r)))
+                    for r in remote["results"]]
+            job["results"] = [gallery.rel_of(out, p) for p in done]
+            job["result"] = job["results"][0]
+            self.log("✔︎ Auf dem Rechner entwickelt: %s" % ", ".join(os.path.basename(p) for p in done))
+        self._start_job("finish", "Auf dem Rechner entwickeln", root, session, work, tool="rechner")
+
+    def rechner_live_thread(self):
+        while True:
+            time.sleep(RECHNER_LIVE_EVERY)
+            cfg = self.rechner_cfg
+            if cfg["live"] and cfg["url"] and cfg["token"]:
+                try:
+                    self.rechner_live_pass()
+                except (rechner.RechnerError, CameraError, OSError) as e:
+                    self.rechner_live = dict(self.rechner_live or {}, error=str(e), time=time.time())
+
+    def rechner_live_pass(self, now=None):
+        """Neue Rohbilder der laufenden Sitzungen schon während der Serie hochladen – beim Stapeln fehlen dann nur
+        noch die letzten. Nur hochladen, nichts löschen (das macht der Abgleich vor dem Stapeln)."""
+        client = self._rechner_client()
+        label = self._root_label(OUT)
+        state = None
+        for session in rechner.recent_sessions(OUT, now=now):
+            job = self.gallery_job
+            if job and job["active"] and job["tool"] == "rechner" and job["session"] == session:
+                continue                             # WBPP liest gerade die Rohbilder – nichts dazwischenschieben
+            wanted = rechner.live_files(OUT, session, self.library, now=now)
+            if not wanted:
+                continue
+            rs = rechner.remote_session(label, session)
+            known = self._rechner_known.get(rs)
+            if known is None:
+                known = self._rechner_known[rs] = client.files(rs)
+            todo = {r: p for r, p in wanted.items() if (known.get(r) or {}).get("size") != os.path.getsize(p)}
+            if todo:
+                with self._rechner_sync_lock:
+                    st = rechner.sync(client, rs, todo, remote=known)
+                self.log("Rechner: %d Rohbilder von %s vorab hochgeladen (%.0f MB)" % (
+                    st["uploaded"], session, st["bytes"] / 1e6))
+            up = [r for r in wanted if r in known]
+            kinds = {}
+            for r in up:
+                kinds[rechner.frame_label(r)] = kinds.get(rechner.frame_label(r), 0) + 1
+            state = {"session": session, "uploaded": len(up), "total": len(wanted), "kinds": kinds,
+                     "time": time.time(), "error": None}
+        if state:
+            self.rechner_live = state
+        return state
 
     def act_library_delete(self, body):
         try:
@@ -1733,6 +1895,7 @@ class Studio:
                 "master_job": dict(self.master_job) if self.master_job else None,
                 "last_light": self.last_light, "last_flat": self.last_flat,
                 "gallery_job": dict(self.gallery_job) if self.gallery_job else None,
+                "rechner_live": dict(self.rechner_live) if self.rechner_live else None,
                 "out": OUT, "log": list(self.logs)[-40:],
             }
 
@@ -1757,6 +1920,7 @@ class Handler(BaseHTTPRequestHandler):
                "/api/gallery/cull": "act_gallery_cull", "/api/gallery/export": "act_gallery_export",
                "/api/gallery/script": "act_gallery_script", "/api/gallery/check": "act_gallery_check",
                "/api/gallery/stack": "act_gallery_stack", "/api/gallery/finish": "act_gallery_finish",
+               "/api/rechner/config": "act_rechner_config", "/api/rechner/check": "act_rechner_check",
                "/api/library/delete": "act_library_delete", "/api/library/build": "act_library_build"}
 
     def log_message(self, *a):
@@ -1872,6 +2036,7 @@ def main():
     httpd.daemon_threads = True
     threading.Thread(target=studio.camera_thread, args=(guid, name), daemon=True).start()
     threading.Thread(target=studio.download_worker, daemon=True).start()
+    threading.Thread(target=studio.rechner_live_thread, daemon=True).start()
     studio.log("6D Studio läuft – Bedienoberfläche: http://127.0.0.1:%d  (Fotos: %s)" % (WEB_PORT, OUT))
     try:
         httpd.serve_forever()

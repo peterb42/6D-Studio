@@ -859,20 +859,125 @@ def prepare_wbpp(out, session, library, exe):
     """Für PixInsight exportieren und die WBPP-Kommandozeile bauen: Eingang pixinsight/Rohbilder (dir= liest
     rekursiv – deshalb nicht pixinsight/ selbst, sonst sähe WBPP auch wbpp/ und frühere Ergebnisse), Ausgabe nach
     pixinsight/wbpp/."""
-    script = wbpp_script(exe)
-    if not script:
+    if not wbpp_script(exe):
         raise ValueError("WBPP nicht gefunden – PixInsight 1.9.6 oder neuer nötig")
     res = export_pixinsight(out, session, library)
     if not res["lights_raw"]:
         raise ValueError("Keine RAW-Lights in %s – WBPP braucht RAWs" % session)
     dest = res["folder"]
+    return {"folder": dest, "input": res["input"], "out": os.path.join(dest, WBPP_DIR),
+            "command": wbpp_command(exe, dest), "counts": res["counts"], "lights": res["counts"].get("light", 0),
+            "calib": sum(n for t, n in res["counts"].items() if t != "light")}
+
+
+def wbpp_command(exe, dest):
+    """WBPP für <dest>/Rohbilder mit Ausgabe nach <dest>/wbpp – <dest> ist pixinsight/ einer Sitzung oder der
+    Ordner einer Sitzung auf dem Rechner (rechner/6d-rechner.py), beide gleich aufgebaut."""
+    script = wbpp_script(exe)
+    if not script:
+        raise ValueError("WBPP nicht gefunden – PixInsight 1.9.6 oder neuer nötig")
     wbpp = os.path.join(dest, WBPP_DIR)
     os.makedirs(wbpp, exist_ok=True)
-    args = ["automationMode=true", "dir=" + res["input"], "outputDirectory=" + wbpp, "usePipelineScript=true",
-            "pipelineScriptFile=" + PI_EVENTS] + list(WBPP_OPTIONS)
-    return {"folder": dest, "out": wbpp, "command": pi_command(exe, script, args), "counts": res["counts"],
-            "lights": res["counts"].get("light", 0),
-            "calib": sum(n for t, n in res["counts"].items() if t != "light")}
+    args = ["automationMode=true", "dir=" + os.path.join(dest, EXPORT_INPUT), "outputDirectory=" + wbpp,
+            "usePipelineScript=true", "pipelineScriptFile=" + PI_EVENTS] + list(WBPP_OPTIONS)
+    return pi_command(exe, script, args)
+
+
+def run_pixinsight(command, handle):
+    """PixInsight ohne Oberfläche (pi_command); jede Zeile „6D>> …“ der Standardausgabe geht als Ereignis an handle.
+    Der Rückgabewert von PixInsight ist auch nach Fehlern im Skript 0 – ob es geklappt hat, sagen die Ereignisse
+    und die Ausgabedateien."""
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                          text=True, bufsize=1, errors="replace") as p:
+        for line in p.stdout:
+            ev = pi_event(line)
+            if ev:
+                handle(ev)
+        return p.wait()
+
+
+class PixInsightCrash(RuntimeError):
+    """PixInsight endete mitten im Lauf (Signal oder ohne Ende von WBPP)."""
+
+    def __init__(self, step, rc):
+        self.step, self.rc = step, rc
+        why = "Signal %d" % -rc if rc is not None and rc < 0 else "WBPP lief nicht zu Ende"
+        super().__init__("PixInsight ist bei „%s“ abgestürzt (%s)" % (step, why))
+
+
+WBPP_NO_LN = "localNormalization=false"
+WBPP_LN_STEPS = (WBPP_LABELS["Local Normalization"], WBPP_LABELS["LN reference generation"])
+
+
+def reset_wbpp(dest, keep=("logs",)):
+    """wbpp/ leeren, die Protokolle bleiben. Vor jedem Lauf: WBPP überschreibt keine Masters, sondern legt
+    masterDark_…_(1).xisf daneben (240 MB je Master und Lauf). Nach einem Absturz: die Zwischenbilder.
+    → freigegebene Bytes"""
+    wbpp, freed = os.path.join(dest, WBPP_DIR), 0
+    if os.path.isdir(wbpp):
+        for n in os.listdir(wbpp):
+            if n not in keep:
+                p = os.path.join(wbpp, n)
+                freed += _tree_size(p)
+                if os.path.isdir(p):
+                    shutil.rmtree(p)
+                else:
+                    os.remove(p)
+    return freed
+
+
+def _with_option(command, option):
+    """Kommandozeile mit einer weiteren WBPP-Angabe im -r=…-Argument."""
+    return [a + "," + option if a.startswith("-r=") else a for a in command]
+
+
+def run_wbpp(command, dest, job, run=run_pixinsight):
+    """WBPP laufen lassen, Fortschritt in job (dict wie der Auftrag im Studio: steps, index, step, detail,
+    warnings), danach collect_wbpp. → Pfad des Ergebnisses; job["freed"] = gelöschte Bytes.
+    Stürzt PixInsight bei der lokalen Normalisierung ab (gesehen mit 1.9.6 auf dem Mac: SIGABRT in
+    LocalNormalizationThread, nicht jedes Mal), läuft WBPP noch einmal ohne sie – mit Warnung im Auftrag."""
+    reset_wbpp(dest)
+    try:
+        return _run_wbpp_once(command, dest, job, run)
+    except PixInsightCrash as e:
+        if e.step not in WBPP_LN_STEPS or any(WBPP_NO_LN in a for a in command):
+            raise
+        job["warnings"].append("PixInsight stürzte bei „%s“ ab – noch einmal ohne lokale Normalisierung gestapelt"
+                               % e.step)
+        return _run_wbpp_once(_with_option(command, WBPP_NO_LN), dest, job, run)
+
+
+def _run_wbpp_once(command, dest, job, run):
+    t0 = time.time()
+    labels, lights, state = {}, [], {"pipeline": False, "end": False}
+
+    def on(ev):
+        if ev["event"] == "pipeline":
+            state["pipeline"] = True
+            job["steps"] = [""] * ev["count"]
+        elif ev["event"] == "start":
+            labels[ev["index"]] = wbpp_label(ev["name"], ev["group"])
+            job.update(index=ev["index"], step=labels[ev["index"]], percent=0.0, detail=wbpp_detail(ev["group"]))
+        elif ev["event"] == "done":
+            label = labels.get(ev["index"]) or wbpp_label(ev["name"], ev["group"])
+            if ev["failed"]:
+                job["warnings"].append("%s: %s" % (label, ev["message"] or "fehlgeschlagen"))
+            m = re.match(r"(\d+) integrated", ev["message"])
+            if ev["name"] == "Integration" and ev["group"].startswith("Light") and m:
+                lights.append(int(m.group(1)))
+        elif ev["event"] == "end":
+            state["end"] = True
+    rc = run(command, on)
+    if (rc is not None and rc < 0) or (state["pipeline"] and not state["end"]):
+        step = job.get("step") or "Start"
+        reset_wbpp(dest)                             # Zwischenbilder des abgebrochenen Laufs (GB) weg
+        raise PixInsightCrash(step, rc)
+    try:
+        path, job["freed"] = collect_wbpp(dest, t0, lights[-1] if lights else None)
+    except ValueError:
+        reset_wbpp(dest)
+        raise
+    return path
 
 
 def pi_event(line):
@@ -962,8 +1067,8 @@ def collect_wbpp(dest, since, lights=None):
     found = [p for p in found if os.path.getmtime(p) >= since - 1]
     if not found:
         why = wbpp_problem(wbpp, since)
-        raise ValueError("WBPP hat kein Master-Light erzeugt" + (": " + why if why else
-                                                                 " – Protokoll in pixinsight/wbpp/logs"))
+        raise ValueError("WBPP hat kein Master-Light erzeugt" + (": " + why if why else " – Protokoll in %s" % (
+            os.path.join(wbpp, "logs").replace(os.path.expanduser("~"), "~"))))
     found.sort(key=lambda p: ("_autocrop" not in os.path.basename(p), -os.path.getmtime(p)))
     best = found[0]
     header, _ = imaging.image_header(best)
@@ -1001,9 +1106,36 @@ def _finish_source(out, rel):
 def prepare_pi_finish(out, rel, exe):
     """Fertig entwickeln mit PixInsight (6d-fertig.js) → <Stapel>_fertig-pi.jpg und .tif daneben."""
     path = _finish_source(out, rel)
+    command, outputs = pi_finish_command(exe, path)
+    return {"folder": os.path.dirname(path), "command": command, "steps": list(PI_FINISH_STEPS), "outputs": outputs}
+
+
+def pi_finish_command(exe, path):
+    """→ (Kommandozeile für 6d-fertig.js, [JPEG, TIFF] daneben)."""
     target = os.path.splitext(path)[0] + PI_FINISH_SUFFIX
-    return {"folder": os.path.dirname(path), "command": pi_command(exe, PI_FINISH, [path, target]),
-            "steps": list(PI_FINISH_STEPS), "outputs": [target + ".jpg", target + ".tif"]}
+    return pi_command(exe, PI_FINISH, [path, target]), [target + ".jpg", target + ".tif"]
+
+
+def run_pi_finish(command, outputs, job, run=run_pixinsight):
+    """6d-fertig.js laufen lassen, Fortschritt in job. → die Ausgabedateien, die dieser Lauf geschrieben hat."""
+    t0 = time.time()
+    problem = []
+    job["steps"] = list(PI_FINISH_STEPS)
+
+    def on(ev):
+        if ev["event"] == "step":
+            job.update(index=job.get("index", 0) + 1, step=ev["text"], percent=0.0)
+        elif ev["event"] == "saved":
+            job["detail"] = os.path.basename(ev["text"])
+        elif ev["event"] == "error":
+            problem.append(ev["text"])
+    run(command, on)
+    if problem:
+        raise RuntimeError("PixInsight: %s" % problem[0])
+    done = [p for p in outputs if os.path.isfile(p) and os.path.getmtime(p) >= t0 - 1]
+    if not done:
+        raise RuntimeError("PixInsight lief durch, aber es gibt kein fertiges Bild")
+    return done
 
 
 # ---------------------------------------------------------------- Siril

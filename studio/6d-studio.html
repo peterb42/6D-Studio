@@ -124,6 +124,10 @@ table.mini td.why{color:var(--muted)}
 .flow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:10px}
 .ftools{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:12.5px}
 .ftools .hint{margin:0 0 0 4px}
+.rcfg{border:1px solid var(--line);border-radius:8px;padding:9px 10px;margin-bottom:10px;font-size:12.5px;display:flex;flex-direction:column;gap:7px}
+.rcfg .row{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.rcfg input[type=text],.rcfg input[type=password]{background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:6px 8px;width:260px;max-width:100%}
+.rcfg code{font-size:12px}
 .fstep{border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-size:12.5px;display:flex;flex-direction:column;gap:6px}
 .fstep.done{border-color:#2f6b3f}
 .fhead{display:flex;align-items:center;gap:7px;font-size:13.5px}
@@ -229,6 +233,7 @@ body.night #red{display:block}
         <section class="galmain">
           <div class="galjob" id="galJob" hidden></div>
           <div class="flow" id="galFlow" hidden></div>
+          <div class="rcfg" id="galRcfg" hidden></div>
           <div class="galbar">
             <b id="galTitle"></b><span class="hint" id="galSub"></span><span class="spacer"></span>
             <button class="btn" id="galAll" title="Alle auswählen / keine">Alle</button>
@@ -1290,16 +1295,64 @@ function galFileFor(it, kinds) {                        // erste Datei des Bilds
   return f ? f.rel : null;
 }
 const galStackable = it => ['fits', 'xisf'].includes(it.kind) && !it.finished && !/\/Bibliothek\//.test(it.id);
-// Programm für Stapeln und Fertig entwickeln: PixInsight oder Siril, was installiert ist – die Wahl bleibt im Browser
-const TOOL_NAME = {pixinsight: 'PixInsight', siril: 'Siril'};
-const galTools = () => GAL.info ? ['pixinsight', 'siril'].filter(t => GAL.info[t]) : [];
+// Programm für Stapeln und Fertig entwickeln: PixInsight oder Siril, was installiert ist, oder der Rechner
+// (PixInsight auf einem zweiten Rechner, rechner/6d-rechner.py) – die Wahl bleibt im Browser
+const TOOL_NAME = {pixinsight: 'PixInsight', siril: 'Siril', rechner: 'Rechner'};
+const ACT = t => t === 'rechner' ? 'Auf dem Rechner' : `Mit ${TOOL_NAME[t] || '…'}`;
+const galRechner = () => (GAL.info && GAL.info.rechner) || {};
+const galTools = () => GAL.info ? ['pixinsight', 'siril', 'rechner'].filter(t => t === 'rechner' ? galRechner().configured : GAL.info[t]) : [];
+const galCanFinish = t => t === 'rechner' ? !!(galRechner().ok && galRechner().pixinsight) : !!t;
 function galTool() {
   const have = galTools(), want = store.get('galTool', 'pixinsight');
   return have.includes(want) ? want : have[0] || null;
 }
 const FINISH_TEXT = {
   pixinsight: 'GradientCorrection, Hintergrund neutralisieren, Farbkalibrierung, MultiscaleAdaptiveStretch, Grünstich weg – als JPEG und 16-Bit-TIFF neben dem Stapel (PixInsight ohne Oberfläche).',
-  siril: 'Hintergrund und Gradient entfernen, Grünstich weg, strecken – als JPEG und 16-Bit-TIFF neben dem Stapel.'};
+  siril: 'Hintergrund und Gradient entfernen, Grünstich weg, strecken – als JPEG und 16-Bit-TIFF neben dem Stapel.',
+  rechner: 'Auf dem Rechner mit PixInsight: GradientCorrection, Hintergrund neutralisieren, Farbkalibrierung, MultiscaleAdaptiveStretch, Grünstich weg – JPEG und 16-Bit-TIFF kommen neben den Stapel zurück. Der Stapel geht nur hoch, wenn er dort noch fehlt.'};
+const fmtGB = gb => gb >= 1000 ? `${(gb / 1000).toFixed(1)} TB` : `${Math.round(gb)} GB`;
+function galRechnerChip() {                             // Zustand des Rechners in der Zeile „Nachbearbeiten mit“
+  const r = galRechner(), live = S && S.rechner_live;
+  if (!r.configured) return '';
+  if (!r.ok) return '<span class="warn">Rechner nicht erreichbar</span>';
+  return `<span class="hint">● ${esc(r.name)}${r.gpu && r.gpu.length ? ' · ' + esc(r.gpu[0].replace(/^NVIDIA (GeForce )?/, '')) : ''} · ${fmtGB(r.free_gb || 0)} frei${r.busy ? ' · arbeitet' : ''}`
+    + (r.live ? (live ? ` · vorab oben: ${live.uploaded}/${live.total} (${esc(live.session)})` : ' · lädt neue Rohbilder vorab hoch') : '')
+    + (r.live && live && live.error ? ` <span class="warn">${esc(live.error)}</span>` : '') + '</span>';
+}
+function galRechnerState(r) {
+  if (!r.configured) return '<span class="hint">Noch nicht eingerichtet.</span>';
+  if (!r.ok) return `<span class="bad">${esc(r.error || 'nicht erreichbar')}</span>`;
+  return `<span class="ok">✓ ${esc(r.name)} erreichbar</span> <span class="hint">· PixInsight ${r.pixinsight ? (r.wbpp ? 'mit WBPP' : 'ohne WBPP') : 'fehlt'}`
+    + ` · ${r.cpus || '?'} Kerne · ${r.ram_gb || '?'} GB RAM · ${(r.gpu || []).map(esc).join(', ') || 'keine NVIDIA-Karte'} · ${fmtGB(r.free_gb || 0)} frei</span>`;
+}
+function renderGalRcfg() {                              // eigener Kasten: die Flusszeile wird bei jeder Abfrage neu gebaut
+  const box = $('#galRcfg'), r = galRechner();
+  box.hidden = !GAL.rcfg;
+  if (!GAL.rcfg) return;
+  box.innerHTML = '<b>Rechner – PixInsight auf einem zweiten Rechner</b>'
+    + '<div class="hint">Auf dem Rechner läuft <code>rechner/6d-rechner.py</code> (Anleitung: <code>docs/rechner.md</code>). Adresse und Schlüssel zeigt er beim Start; über Tailscale ist er auch unterwegs erreichbar.</div>'
+    + `<div class="row"><span class="lbl">Adresse</span><input type="text" id="rcUrl" placeholder="http://100.101.102.103:8090" value="${esc(r.url || '')}">`
+    + `<span class="lbl">Schlüssel</span><input type="password" id="rcToken" autocomplete="off" placeholder="${r.token_set ? 'gespeichert – leer lassen' : 'aus <daten>/token'}"></div>`
+    + `<label class="row"><input type="checkbox" id="rcLive"${r.live ? ' checked' : ''}> Neue Rohbilder schon während der Serie hochladen (alle 20 s) – beim Stapeln fehlen dann nur noch die letzten</label>`
+    + '<div class="row"><button class="btn primary" data-a="save">Speichern und prüfen</button>'
+    + (r.configured ? '<button class="btn" data-a="check">Prüfen</button><button class="btn" data-a="off">Rechner aus</button>' : '')
+    + '<button class="btn" data-a="close">Schließen</button></div>'
+    + `<div>${galRechnerState(r)}</div>`;
+}
+$('#galRcfg').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-a]');
+  if (!b) return;
+  const a = b.dataset.a;
+  if (a === 'close') { GAL.rcfg = false; renderGalRcfg(); return; }
+  b.disabled = true;
+  const j = a === 'check' ? await apiJson('/api/rechner/check', {})
+    : await apiJson('/api/rechner/config', a === 'off' ? {url: ''} : {url: $('#rcUrl').value, token: $('#rcToken').value, live: $('#rcLive').checked});
+  b.disabled = false;
+  if (!j) return;
+  GAL.info.rechner = j.rechner;
+  renderGalRcfg(); renderGalFlow(); renderGalBar();
+  toast(j.rechner.ok ? `Rechner ${j.rechner.name} erreichbar` : j.rechner.configured ? `Rechner: ${j.rechner.error}` : 'Rechner aus', 'info');
+});
 function renderGalBar() {
   const picked = galPicked(), src = GAL.source || '', session = src.startsWith('s:');
   const tools = GAL.info ? GAL.info.tools : [];
@@ -1317,8 +1370,8 @@ function renderGalBar() {
   $('#galAdoptRow').hidden = GAL.panel !== 'adopt' || !src.startsWith('n:');
   const fin = picked.length === 1 && galStackable(picked[0]), tool = galTool();
   $('#galFinish').hidden = !GAL.items.some(galStackable);
-  $('#galFinish').disabled = !fin || !tool || galJobRunning();
-  $('#galFinish').textContent = tool ? `Mit ${TOOL_NAME[tool]} entwickeln` : 'Fertig entwickeln';
+  $('#galFinish').disabled = !fin || !galCanFinish(tool) || galJobRunning();
+  $('#galFinish').textContent = tool ? `${ACT(tool)} entwickeln` : 'Fertig entwickeln';
   $('#galFinish').title = !tool ? 'Weder PixInsight noch Siril installiert (Siril ist kostenlos: siril.org)'
     : fin ? FINISH_TEXT[tool] : 'Ein gestapeltes Bild (FITS oder XISF) auswählen';
   $('#galAll').textContent = GAL.sel.size && GAL.sel.size === GAL.items.length ? 'Keine' : 'Alle';
@@ -1340,7 +1393,8 @@ function renderGalFlow() {
   box.hidden = !sm;
   if (!sm) return;
   const c = sm.calib, tool = galTool(), busy = galJobRunning();
-  const canStack = tool === 'pixinsight' ? !!GAL.info.wbpp : tool === 'siril';
+  const r = galRechner();
+  const canStack = tool === 'pixinsight' ? !!GAL.info.wbpp : tool === 'rechner' ? !!(r.ok && r.wbpp) : tool === 'siril';
   const cal = (label, x) => x.n ? `${label} ${x.n}${x.from ? ` (aus ${x.from})` : ''}` : x.master ? `${label}: Master` : `${label} –`;
   const skipped = Object.entries(c).filter(([, x]) => x.skipped).map(([t, x]) => `${x.skipped} ${GAL.info.frame_types[t]}`);
   const ck = sm.check;
@@ -1362,16 +1416,17 @@ function renderGalFlow() {
   const res = sm.results.map(r => `<div class="fitem"><img src="${galThumb(r.finished_jpg || r.preview, 200)}" data-big="${esc(r.finished_jpg || r.preview)}" alt="">`
     + `<div><b>${esc(galShort(r))}</b> <span class="hint">${esc((r.meta.time || '').slice(0, 16))}</span>`
     + (r.finished_jpg ? ` <span class="ok">fertig ✓${r.finished_by.length ? ' ' + r.finished_by.map(t => TOOL_NAME[t]).join(', ') : ''}</span>` : '') + '</div>'
-    + `<div class="row"><button class="btn${r.finished_jpg ? '' : ' primary'}" data-a="finish" data-rel="${esc(r.id)}"${tool && !busy ? '' : ' disabled'}>${r.finished_jpg ? 'Neu entwickeln' : 'Fertig entwickeln'}</button>`
+    + `<div class="row"><button class="btn${r.finished_jpg ? '' : ' primary'}" data-a="finish" data-rel="${esc(r.id)}"${galCanFinish(tool) && !busy ? '' : ' disabled'}>${r.finished_jpg ? 'Neu entwickeln' : 'Fertig entwickeln'}</button>`
     + (r.finished_jpg ? `<button class="btn" data-a="view" data-rel="${esc(r.finished_jpg)}">Ansehen</button>` : '')
     + `<button class="btn" data-a="open" data-rel="${esc(r.id)}" title="Gestapeltes Bild in ${esc(name || 'einem Programm')} öffnen – zum Weiterbearbeiten von Hand">Öffnen …</button></div></div>`).join('');
-  const tools = galTools();
+  const tools = galTools(), local = tools.filter(t => t !== 'rechner');
   box.innerHTML =
     `<div class="ftools"><span class="lbl">Nachbearbeiten mit</span>`
-    + (tools.length ? tools.map(t => `<button class="btn${t === tool ? ' on' : ''}" data-a="tool" data-tool="${t}">${TOOL_NAME[t]}</button>`).join('')
-                    : '<span class="warn">weder PixInsight noch Siril installiert – Siril ist kostenlos (siril.org)</span>')
-    + (tools.length === 1 ? `<span class="hint">${tool === 'siril' ? 'PixInsight nicht gefunden' : 'Siril nicht gefunden (kostenlos, siril.org)'}</span>` : '')
-    + '</div>'
+    + tools.map(t => `<button class="btn${t === tool ? ' on' : ''}" data-a="tool" data-tool="${t}">${TOOL_NAME[t]}</button>`).join('')
+    + (!local.length ? '<span class="warn">weder PixInsight noch Siril installiert – Siril ist kostenlos (siril.org)</span>'
+       : local.length === 1 ? `<span class="hint">${local[0] === 'siril' ? 'PixInsight nicht gefunden' : 'Siril nicht gefunden (kostenlos, siril.org)'}</span>` : '')
+    + `<button class="btn" data-a="rcfg" title="PixInsight auf einem zweiten Rechner (z. B. Linux-PC mit Grafikkarte) – einrichten">${r.configured ? 'Rechner ⚙︎' : '+ Rechner'}</button>`
+    + galRechnerChip() + '</div>'
     + `<div class="fstep${ck && !ck.stale && !odd ? ' done' : ''}"><div class="fhead"><span class="fnum">1</span><b>Prüfen</b></div>`
     + `<div>${sm.lights} Lights · ${cal('Darks', c.dark)} · ${cal('Bias', c.bias)} · ${cal('Flats', c.flat)}${c.darkflat.n ? ' · ' + cal('Dark-Flats', c.darkflat) : ''}`
     + (skipped.length ? `<div class="hint">nicht passend, bleiben draußen: ${skipped.join(', ')}</div>` : '') + '</div>'
@@ -1383,9 +1438,12 @@ function renderGalFlow() {
         ? `WBPP kalibriert mit ${calText}, debayert, bewertet und gewichtet die Lights, richtet aus, normalisiert lokal und stapelt ${sm.lights_raw} RAW-Lights (≈ ${est} min, PixInsight ohne Oberfläche). Die Zwischenbilder werden danach gelöscht.`
           + (piMaster ? ' Masters der Bibliothek nimmt WBPP nicht (nur XISF) – dafür die Rohbilder dazu, wenn es sie noch gibt.' : '')
         : 'WBPP nicht gefunden – PixInsight 1.9.6 oder neuer nötig.')
+      : tool === 'rechner' ? (r.ok ? `Lädt die passenden Rohbilder (${sm.lights_raw} RAW-Lights, ${calText}) zum Rechner ${esc(r.name)} – nur, was dort noch fehlt – und lässt WBPP dort laufen: kalibrieren, debayern, bewerten, ausrichten, lokal normalisieren, stapeln. Das Ergebnis kommt nach pixinsight/, die Zwischenbilder löscht der Rechner.`
+          + (r.wbpp ? '' : ' <span class="warn">WBPP fehlt auf dem Rechner.</span>')
+        : `<span class="warn">Rechner nicht erreichbar: ${esc(r.error || '')}</span>`)
       : tool === 'siril' ? `Siril kalibriert mit ${calText}, debayert, richtet aus und stapelt ${sm.lights_raw} RAW-Lights (≈ ${est} min). Die Zwischenbilder werden danach gelöscht.`
       : 'Ohne PixInsight oder Siril: die Ordner für WBPP oder das Siril-Skript anlegen und dort von Hand starten.'}</div>`
-    + `<div class="row">${tool ? `<button class="btn primary" data-a="stack"${canStack && sm.lights_raw && !busy ? '' : ' disabled'}>Mit ${name} stapeln</button>` : ''}`
+    + `<div class="row">${tool ? `<button class="btn primary" data-a="stack"${canStack && sm.lights_raw && !busy ? '' : ' disabled'}>${ACT(tool)} stapeln</button>` : ''}`
     + `<button class="btn" data-a="pi" title="Nur die Ordner für WBPP anlegen: Light/Dark/Flat/Bias als Verknüpfungen, Listen, bilder.csv – zum Starten in PixInsight von Hand">Ordner für WBPP</button>`
     + `<button class="btn" data-a="script" title="Arbeitsordner mit Skript, zum Ausführen in Siril selbst">Siril-Skript</button></div></div>`
     + `<div class="fstep${sm.results.some(r => r.finished_jpg) ? ' done' : ''}"><div class="fhead"><span class="fnum">3</span><b>Fertig entwickeln</b></div>`
@@ -1399,6 +1457,7 @@ $('#galFlow').addEventListener('click', async e => {
   if (!b || b.disabled) return;
   const sm = GAL.summary, a = b.dataset.a;
   if (a === 'tool') { store.set('galTool', b.dataset.tool); renderGalFlow(); renderGalBar(); }
+  else if (a === 'rcfg') { GAL.rcfg = !GAL.rcfg; renderGalRcfg(); }
   else if (a === 'check') { if (await apiJson('/api/gallery/check', {session: sm.session})) GAL.jobSeen = null; }
   else if (a === 'cull') {
     const rels = sm.check.suggest;
@@ -1461,7 +1520,7 @@ function renderGalJob() {                               // laufender oder zuletz
     + (j.check ? ` – ${j.check.main} im Hauptfeld, ${j.check.suggest} auffällig` : '')
     + (j.result ? ` – ${esc(j.result.split('/').pop())}` : '') + (j.freed ? ` · ${fmtSize(j.freed)} Zwischenbilder gelöscht` : '')
     + (j.started && j.finished ? ` · ${fmtDur(j.finished - j.started)}` : '')
-    + (j.kind === 'stack' && j.result ? ` <button class="btn primary" data-a="finish" data-rel="${esc(j.result)}" data-tool="${esc(j.tool || '')}">Mit ${esc(TOOL_NAME[j.tool] || '…')} entwickeln</button>` : '')
+    + (j.kind === 'stack' && j.result ? ` <button class="btn primary" data-a="finish" data-rel="${esc(j.result)}" data-tool="${esc(j.tool || '')}">${esc(ACT(j.tool))} entwickeln</button>` : '')
     + (j.kind === 'finish' && j.result ? ` <button class="btn" data-a="view" data-rel="${esc(j.result)}">Ansehen</button>` : '')
     + (j.warnings && j.warnings.length ? `<div class="hint"><span class="warn">⚠︎ ${esc(j.warnings.join(' · '))}</span></div>` : '');
   renderGalBar();

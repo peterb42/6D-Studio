@@ -1,0 +1,22 @@
+# 6D Rechner als systemd-Dienst des Benutzers (Linux) – Anleitung: docs/rechner.md
+#
+#   mkdir -p ~/.config/systemd/user && cp rechner/6d-rechner.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now 6d-rechner
+#   sudo loginctl enable-linger $USER          # läuft auch ohne Anmeldung, startet mit dem Rechner
+#   journalctl --user -u 6d-rechner -f         # Meldungen
+#
+# %h ist das Heimatverzeichnis; das Repository liegt hier in ~/6D-Studio, die Daten in ~/6d-rechner.
+
+[Unit]
+Description=6D Rechner – PixInsight für 6D Studio
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 %h/6D-Studio/rechner/6d-rechner.py --daten %h/6d-rechner
+Restart=on-failure
+RestartSec=10
+Nice=5
+
+[Install]
+WantedBy=default.target

@@ -119,8 +119,9 @@ RAW und JPEG gleichen Namens sind ein Eintrag, ebenso FITS und PNG eines Live-St
 ### Nachbearbeitung in drei Schritten
 
 Ist eine Sitzung gewählt, steht oben ihr Ablauf. Ein Haken zeigt, was erledigt ist. Darüber: **Nachbearbeiten mit
-PixInsight | Siril** – das Programm für Stapeln und Fertig entwickeln (nur installierte; die Wahl merkt sich der
-Browser, ohne Wahl PixInsight).
+PixInsight | Siril | Rechner** – das Programm für Stapeln und Fertig entwickeln (nur installierte; die Wahl merkt
+sich der Browser, ohne Wahl PixInsight). **Rechner** ist PixInsight auf einem zweiten Rechner, z. B. einem Linux-PC
+mit Grafikkarte: siehe [rechner.md](rechner.md).
 
 1. **Prüfen**
    - Anzeige: wie viele Lights; welche Kalibrierbilder passen (Darks, Bias, Flats, Dark-Flats; nicht passende

@@ -9,7 +9,8 @@ des Sternenhimmels:
 - **Kalibrier-Bibliothek** (Bias, Darks, Flats, Dark-Flats) mit geführter Aufnahme und automatischer Auswahl
   passender Masters
 - **Bildverwaltung** für Sitzungen, Einzelaufnahmen und Live-Stacks: ansehen, aussortieren, übernehmen, in
-  installierten Programmen öffnen; **stapeln und fertig entwickeln mit PixInsight (WBPP) oder Siril** auf Knopfdruck
+  installierten Programmen öffnen; **stapeln und fertig entwickeln mit PixInsight (WBPP) oder Siril** auf Knopfdruck –
+  auch auf einem **zweiten Rechner** (z. B. Linux-PC mit Grafikkarte, über Tailscale)
 
 ```
  Browser ──HTTP :8066──┐
@@ -311,6 +312,17 @@ Geprüft mit Siril 1.4.5 und PixInsight 1.9.6 (WBPP 3.1.2) mit echten Lights. FI
 von unten nach oben, ältere dreht es vor der Benutzung um; PixInsight beachtet die Angabe im FITS-Kopf, und
 Siril 1.4 liest auch XISF. Siehe [docs/nachbearbeitung.md](docs/nachbearbeitung.md).
 
+**Rechner (PixInsight auf einem zweiten Rechner):** Auf dem PC läuft `rechner/6d-rechner.py` – ein Dienst ohne
+Oberfläche, nur Python, erreichbar über Tailscale. Im Studio: **+ Rechner** (Adresse und Schlüssel), danach gibt es
+**Rechner** als drittes Programm neben PixInsight und Siril.
+- **Auf dem Rechner stapeln:** Export wie für WBPP, Abgleich mit dem Rechner (fehlende Rohbilder hoch, nicht mehr
+  passende dort weg), WBPP dort mit Fortschritt im Studio, Master-Light zurück nach `pixinsight/`.
+- **Auf dem Rechner entwickeln:** Stapel hoch (wenn er dort fehlt), `6d-fertig.js` dort, JPEG und TIFF zurück.
+- **Vorab hochladen** (wahlweise): neue Rohbilder der laufenden Sitzungen alle 20 s – nur, was der Export auch nähme.
+
+Einrichtung (Ubuntu, NVIDIA, PixInsight, Xvfb, Tailscale, systemd), Datenmengen und Schnittstelle:
+[docs/rechner.md](docs/rechner.md).
+
 Unter der Leiste steht, welche Programme gefunden wurden und welche freien fehlen. Die Recherche zu den Programmen
 und Formaten steht in [docs/nachbearbeitung.md](docs/nachbearbeitung.md).
 
@@ -349,6 +361,8 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 | `…/Astro/Bibliothek/` | Masters: Bias, Darks, Flats, Dark-Flats (FITS) |
 | `…/Simulator/` | Fotos des Simulators |
 | `~/.gphoto/6d-proxy.log` | Protokoll des Studios |
+| `~/.config/6d-studio/rechner.json` | Adresse und Schlüssel des Rechners, Vorab-Hochladen (nur für den Besitzer lesbar) |
+| PC: `~/6d-rechner/` | 6D Rechner: `token` (Schlüssel), `sitzungen/<Ablage>_<Sitzung>/` wie `pixinsight/` |
 
 ## Kommandozeile
 
@@ -371,6 +385,12 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 ## Änderungen
 
 **20.11.2026**
+- **Rechner:** PixInsight auf einem zweiten Rechner (`rechner/6d-rechner.py`, Anbindung `studio/rechner.py`).
+  Auf dem Rechner stapeln und entwickeln, Abgleich der Rohbilder, wahlweise Vorab-Hochladen während der Serie;
+  Einrichtung in `docs/rechner.md`.
+- **WBPP robuster:** `wbpp/` wird vor jedem Lauf geleert (keine `_(1)`-Kopien der Masters mehr); stürzt PixInsight
+  ab, nennt der Auftrag den Schritt, die Zwischenbilder werden gelöscht, und bei der lokalen Normalisierung läuft
+  WBPP einmal ohne sie (gesehen: PixInsight 1.9.6, SIGABRT in `LocalNormalizationThread`).
 - **PixInsight** in der Bildverwaltung: Programmwahl „Nachbearbeiten mit PixInsight | Siril“.
   - **Mit PixInsight stapeln:** WBPP ohne Oberfläche, Fortschritt mit den Schritten von WBPP, Master-Light als
     `pixinsight/wbpp_<n>x<Zeit>s.xisf`, Zwischenbilder werden gelöscht.
@@ -436,6 +456,9 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 - **Bildverwaltung:** PixInsight (1.9.6) und Siril (1.4.5) sind mit echten Lights geprüft. SPCC und Astrometrie
   brauchen die Gaia-Datenbank von PixInsight, MLDenoise eine Modelldatei – beides ist noch nicht im Ablauf. Ein
   laufender Auftrag lässt sich nicht abbrechen. GraXpert ist nur über „Öffnen mit“ angebunden.
+- **Rechner:** auf dem Mac mit dem echten PixInsight geprüft (Dienst lokal); auf Linux noch nicht gelaufen (Xvfb,
+  `/opt/PixInsight`, systemd). Die Grafikkarte nutzt der Ablauf noch nicht (BXT/NXT, MLDenoise wären die Schritte
+  dafür).
 
 ## Projekt
 
@@ -448,6 +471,8 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 | `studio/analysis.py` | Bildanalyse des Stapels: Kalibrierung, Rauschgewinn, Hintergrund, Sterne – mit Empfehlungen |
 | `studio/gallery.py` | Bildverwaltung: Übersicht, Vorschaubilder, Aussortieren, Übernehmen, Ordner und Aufträge für PixInsight (WBPP) und Siril, Programme finden und öffnen |
 | `studio/pixinsight/` | Skripte für PixInsight ohne Oberfläche: Ereignisskript für WBPP (Fortschritt), Fertig entwickeln |
+| `studio/rechner.py` | Anbindung an 6D Rechner: Einstellungen, Dateien abgleichen, Aufträge, Vorab-Hochladen |
+| `rechner/6d-rechner.py`, `rechner/6d-rechner.service` | 6D Rechner: Dienst für PixInsight auf einem zweiten Rechner, systemd-Datei |
 | `studio/calib.py` | Kalibrier-Bibliothek: Master-Bias, -Darks, -Flats, -Dark-Flats als FITS, automatische Auswahl (auch nach Optik), Master aus RAWs (κσ-Clipping) |
 | `studio/imaging.py` | RAW (rawpy), JPEG, FITS, XISF (lesen), PNG; EXIF inkl. Sensortemperatur der 6D |
 | `bin/6d-fernsteuerung` | Kommandozeilen-Werkzeug (zsh) – startet/stoppt das Studio, gphoto2-Befehle |
@@ -459,6 +484,7 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 | `tests/` | Tests ohne Kamera, auch Studio ↔ Simulator (`.venv/bin/python -m unittest discover -s tests`, ~2 min) |
 | `docs/canon-6d-ptpip.md` | **Alles, was wir über das Protokoll der 6D herausgefunden haben** |
 | `docs/stacking-und-kalibrierung.md` | Serien, Namenskonvention, Ablauf einer Nacht, Live-Stack, Bildanalyse, Bibliothek |
+| `docs/rechner.md` | Rechner: Aufbau, Einrichtung (Ubuntu, NVIDIA, PixInsight, Xvfb, Tailscale, systemd), Datenmengen, Schnittstelle |
 | `docs/nachbearbeitung.md` | Recherche: Programme zur Nachbearbeitung, was PixInsight (WBPP) und Siril erwarten; die Bildverwaltung |
 
 Läuft mit Python 3.9+. Fernsteuerung, Livebild, Bulb und Serien brauchen nur die Standardbibliothek (auch das

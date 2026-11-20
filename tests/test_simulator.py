@@ -30,6 +30,10 @@ def load(name, rel):
     return mod
 
 
+os.environ["RECHNER_CONFIG"] = os.path.join(tempfile.mkdtemp(), "rechner.json")   # nicht die echten Einstellungen
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+import fake_pixinsight  # noqa: E402
+
 studio = load("studio_mit_sim", "studio/6d-studio.py")
 sim = load("sim6d", "sim/sim6d.py")
 
@@ -453,50 +457,7 @@ class TestStudioMitSimulator(unittest.TestCase):
         st = self.st
         sessions = [x["name"] for x in st.gallery_info()["roots"][0]["index"]["sessions"]]
         name = next(n for n in sessions if n.endswith("_Flats"))        # aus test_9c: 2 Lights, Flats, Dark-Flats
-        root = tempfile.mkdtemp()
-        exe = os.path.join(root, "PixInsight", "PixInsight.app", "Contents", "MacOS", "PixInsight")
-        wbpp_js = os.path.join(root, "PixInsight", "src", "scripts", "BatchPreprocessing", "WBPP.js")
-        for p in (exe, wbpp_js):
-            os.makedirs(os.path.dirname(p), exist_ok=True)
-        open(wbpp_js, "w").close()
-        group = "Light frames, 5472x3648, NoFilter, CFA, 1x1, 2.00s, frames = %d (%d active)"
-        with open(exe, "w") as f:
-            f.write("\n".join([
-                "#!%s" % sys.executable,
-                "import glob, os, sys",
-                "sys.path.insert(0, %r)" % os.path.join(ROOT, "tests"),
-                "import numpy as np, xisf_helper",
-                "run = next(a for a in sys.argv if a.startswith('-r='))[3:].split(',')",
-                "say = lambda s: print('6D>> ' + s, flush=True)",
-                "print('PixInsight Core 1.9.6 Lockhart (arm64)')",
-                "if run[0].endswith('WBPP.js'):",
-                "    opt = dict(a.split('=', 1) for a in run[1:] if '=' in a)",
-                "    n = len(glob.glob(os.path.join(opt['dir'], 'Light', '*')))",
-                "    out, g = opt['outputDirectory'], %r %% (n, n)" % group,
-                "    say('pipeline 4')",
-                "    say('start 1/4 Calibration | ' + g)",
-                "    os.makedirs(os.path.join(out, 'calibrated'), exist_ok=True)",
-                "    open(os.path.join(out, 'calibrated', 'a_c.xisf'), 'wb').write(b'x' * 5000)",
-                "    say('done 1/4 Calibration | %s | 2 | %d calibrated' % (g, n))",
-                "    say('start 3/4 Integration | ' + g)",
-                "    os.makedirs(os.path.join(out, 'master'), exist_ok=True)",
-                "    xisf_helper.write_xisf(os.path.join(out, 'master', 'masterLight_BIN-1_RGB_autocrop.xisf'),",
-                "                           np.full((8, 12, 3), 0.1, np.float32), [('EXPTIME', '2.000')])",
-                "    say('done 3/4 Integration | %s | 2 | %d integrated' % (g, n))",
-                "    say('done 4/4 Astrometric solution | %s | 3 | 1 failed' % g)",
-                "    say('end')",
-                "else:",
-                "    src, target = run[1], run[2]",
-                "    if 'kaputt' in src:",
-                "        say('error Bild kaputt')",
-                "        sys.exit(0)",
-                "    for s in ('Bild laden', 'Strecken', 'Speichern'):",
-                "        say('step ' + s)",
-                "    for ext in ('.jpg', '.tif'):",
-                "        open(target + ext, 'wb').write(b'x')",
-                "        say('saved ' + target + ext)",
-                "    say('fertig')", ""]))
-        os.chmod(exe, 0o755)
+        exe = fake_pixinsight.make(tempfile.mkdtemp())
 
         def wait_job():
             self.assertTrue(wait_for(lambda: not st.gallery_job["active"], 60), st.gallery_job)
@@ -541,6 +502,87 @@ class TestStudioMitSimulator(unittest.TestCase):
                 st.act_gallery_stack({"session": name, "tool": "pixinsight"})
         finally:
             studio.gallery.pixinsight_cli = real
+
+    @unittest.skipUnless(studio.imaging.missing() is None, "braucht numpy und rawpy (venv)")
+    def test_9f_bildverwaltung_mit_rechner(self):
+        """Stapeln und Fertig entwickeln auf dem Rechner (6D Rechner im selben Prozess, PixInsight als Ersatz),
+        dazu das Vorab-Hochladen neuer Rohbilder während der Serie."""
+        st = self.st
+        dienst = load("rechner_dienst", "rechner/6d-rechner.py")
+        dienst.log = lambda text: None
+        worker = dienst.Worker(tempfile.mkdtemp(), fake_pixinsight.make(tempfile.mkdtemp()), name="pc-test", prefix=[])
+        httpd = dienst.serve(worker, "geheim", "127.0.0.1", 0)
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        url = "http://127.0.0.1:%d" % httpd.server_address[1]
+        sessions = [x["name"] for x in st.gallery_info()["roots"][0]["index"]["sessions"]]
+        name = next(n for n in sessions if n.endswith("_Flats"))        # aus test_9c: 2 Lights, Flats, Dark-Flats
+        rs = "Fotos_" + name                                            # Ablage des Tests heißt „Fotos“
+
+        def wait_job():
+            self.assertTrue(wait_for(lambda: not st.gallery_job["active"], 60), st.gallery_job)
+            self.assertIsNone(st.gallery_job["error"], st.gallery_job)
+            return st.gallery_job
+
+        self.assertFalse(st.gallery_info()["rechner"]["configured"])
+        with self.assertRaisesRegex(studio.CameraError, "Rechner nicht eingerichtet"):
+            st.act_gallery_stack({"session": name, "tool": "rechner"})
+        info = st.act_rechner_config({"url": url, "token": "falsch"})["rechner"]
+        self.assertEqual((info["configured"], info["ok"]), (True, False))
+        self.assertIn("Schlüssel", info["error"])
+        info = st.act_rechner_config({"url": url, "token": "geheim"})["rechner"]
+        self.assertEqual((info["ok"], info["name"], info["wbpp"]), (True, "pc-test", True))
+        info = st.act_rechner_config({"url": url, "live": True})["rechner"]       # leerer Schlüssel: bleibt
+        self.assertEqual((info["ok"], info["live"], info["token_set"]), (True, True, True))
+        self.assertNotIn("token", info)                                 # der Schlüssel geht nicht an die Oberfläche
+        with self.assertRaises(studio.CameraError):
+            st.act_rechner_config({"url": "http://a b"})
+
+        st.act_gallery_stack({"session": name, "tool": "rechner"})
+        job = wait_job()
+        self.assertEqual((job["tool"], job["freed"], job["warnings"]), ("rechner", 5000, ["Astrometrie: 1 failed"]))
+        self.assertTrue(job["result"].endswith("/pixinsight/wbpp_2x2s.xisf"), job["result"])
+        local = os.path.join(studio.OUT, job["result"])
+        self.assertTrue(os.path.isfile(local))
+        remote = worker.listing(rs)
+        self.assertEqual(len([r for r in remote if r.startswith("Rohbilder/Light/")]), 2)
+        self.assertEqual(len([r for r in remote if r.startswith("Rohbilder/Flat/")]), 3)
+        st.act_gallery_finish({"rel": job["result"], "tool": "rechner"})
+        job = wait_job()
+        self.assertEqual(job["label"], "Auf dem Rechner entwickeln")
+        for r in job["results"]:
+            self.assertTrue(os.path.isfile(os.path.join(studio.OUT, r)), r)
+        self.assertEqual(sorted(os.path.basename(r) for r in job["results"]),
+                         ["wbpp_2x2s_fertig-pi.jpg", "wbpp_2x2s_fertig-pi.tif"])
+
+        # während einer Serie: ein neues Light geht von selbst hoch (der Durchlauf, den der Hintergrund alle 20 s macht)
+        lights = os.path.join(studio.OUT, "Astro", name, "lights")
+        first = sorted(n for n in os.listdir(lights) if n.endswith(".CR2"))[0]
+        extra = os.path.join(lights, first.replace("_0001", "_0099"))
+        shutil.copy(os.path.join(lights, first), extra)
+        iso = studio.gallery.meta_of(extra)["iso"]          # Bias mit anderer ISO: der Export nähme ihn nicht
+        odd = os.path.join(studio.OUT, "Astro", name, "biases", "BIAS_x_ISO%d_0001.CR2" % (iso * 2))
+        os.makedirs(os.path.dirname(odd), exist_ok=True)
+        with open(odd, "wb") as f:
+            f.write(sim.dng_bytes(sim.Sensor().frame(0.001, iso * 2, 20.0),
+                                  {"exposure": 1 / 4000, "iso": iso * 2, "temp": 20.0, "time": "2026:11:18 23:00:00"}))
+        old = time.time() - 60
+        for p in (extra, odd):
+            os.utime(p, (old, old))
+        try:
+            state = st.rechner_live_pass()
+            self.assertIsNone(state["error"])
+            remote = worker.listing(rs)
+            self.assertIn("Rohbilder/Light/" + studio.gallery.wbpp_name(extra, "light"), remote)
+            self.assertNotIn("Rohbilder/Bias/" + studio.gallery.wbpp_name(odd, "bias"), remote)
+            self.assertEqual(st.snapshot()["rechner_live"]["session"], state["session"])
+        finally:
+            for p in (extra, odd):
+                os.remove(p)
+            if not os.listdir(os.path.dirname(odd)):
+                os.rmdir(os.path.dirname(odd))
+            st.act_rechner_config({"url": ""})                          # Rechner wieder aus
+        self.assertFalse(st.gallery_info()["rechner"]["configured"])
 
 
 if __name__ == "__main__":
