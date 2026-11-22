@@ -1,7 +1,7 @@
 # 6D Studio
 
-WLAN-Fernsteuerung für die **Canon EOS 6D** vom Mac aus, ohne EOS Utility – gebaut für Nachtaufnahmen
-des Sternenhimmels:
+Fernsteuerung für die **Canon EOS 6D** vom Mac aus – per **WLAN oder USB-Kabel**, umschaltbar, ohne EOS Utility –
+gebaut für Nachtaufnahmen des Sternenhimmels:
 - Livebild mit 5×/10×-Lupe der Kamera, Schärfe-Messung am Stern, Fokusantrieb
 - Bulb Start/Stopp mit Timer, ISO/Blende/Zeit, automatischer Download
 - Serien für Stacking (Lights, Darks, Bias, Flats, Dark-Flats) mit Siril-gerechter Ablage
@@ -13,16 +13,21 @@ des Sternenhimmels:
   auch auf einem **zweiten Rechner** (z. B. Linux-PC mit Grafikkarte, über Tailscale)
 
 ```
- Browser ──HTTP :8066──┐
-                       ├──  6d-studio (Python)  ──PTP/IP :15740 (WLAN)──  Canon EOS 6D
- gphoto2 ─ptpip:127.0.0.1┘   hält EINE Verbindung offen
+ Browser ──HTTP :8066──┐                          ┌─ PTP/IP :15740 (WLAN) ──────────┐
+                       ├──  6d-studio (Python) ───┤                                 ├── Canon EOS 6D
+ gphoto2 ─ptpip:127.0.0.1┘   hält EINE Verbindung    └─ PTP über USB (ptpusb.py) ──────┘
+                             offen – WLAN oder Kabel
 ```
 
 ## Schnellstart
 
+**Mit Kabel:** Wi-Fi an der Kamera aus (die 6D schaltet USB ab, solange Wi-Fi an ist), Kamera per USB-Kabel an den
+Mac, Kamera an, `6d-fernsteuerung usb`, dann `6d-fernsteuerung studio`.
+
+**Über WLAN:**
 1. iPhone: Persönlicher Hotspot an, **„Maximale Kompatibilität“** an. Mac in den Hotspot.
 2. Kamera: Wi-Fi-Funktion → **Fernsteuerung (EOS Utility)**. Geht EOS Utility auf dem Mac auf → beenden.
-3. Terminal:
+3. Terminal (beim ersten Mal `6d-fernsteuerung wlan`, das sucht die Kamera im Netz):
 
 ```bash
 6d-fernsteuerung studio
@@ -49,7 +54,8 @@ Einstellungen wie Serienfelder, Nachtmodus, Fadenkreuz und Live-Stack-Optionen m
 
 | Element | Funktion |
 |---|---|
-| Verbindung | Grün mit Kameraname und IP, wenn die 6D angemeldet ist; sonst, was gerade passiert (Anmeldung dauert ~4 s). |
+| Verbindung | Grün mit Kameraname und „WLAN 172.20.10.3“ bzw. „USB-Kabel“, wenn die 6D angemeldet ist; sonst, was gerade passiert (Anmeldung über WLAN dauert ~4 s). |
+| **WLAN \| Kabel** | Verbindungsart umschalten: Das Studio trennt und verbindet gleich neu (nicht während einer Belichtung oder Serie). Ein Klick auf „WLAN“, wenn WLAN schon gewählt ist, fragt nach einer anderen IP-Adresse. Die Wahl gilt auch für `6d-fernsteuerung` (`~/.gphoto/6d-verbindung`). Am Kabel: an der Kamera Wi-Fi aus. |
 | Modus | Stellung des Moduswahlrads (M, B, Av …) – wichtig für Bulb, Serien und den Assistenten. |
 | Fotos: … | Zielordner auf dem Mac. |
 | **Nachtmodus** (<kbd>N</kbd>) | Alles in Rot – schont die Dunkelanpassung der Augen. |
@@ -361,20 +367,22 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 | `…/Astro/Bibliothek/` | Masters: Bias, Darks, Flats, Dark-Flats (FITS) |
 | `…/Simulator/` | Fotos des Simulators |
 | `~/.gphoto/6d-proxy.log` | Protokoll des Studios |
+| `~/.gphoto/6d-verbindung`, `~/.gphoto/6d-wlan-ip` | Verbindungsart (`usb` oder `wlan`) und Kamera-IP – Studio und `6d-fernsteuerung` |
 | `~/.config/6d-studio/rechner.json` | Adresse und Schlüssel des Rechners, Vorab-Hochladen (nur für den Besitzer lesbar) |
 | PC: `~/6d-rechner/` | 6D Rechner: `token` (Schlüssel), `sitzungen/<Ablage>_<Sitzung>/` wie `pixinsight/` |
 
 ## Kommandozeile
 
-`6d-fernsteuerung <befehl>` – über WLAN laufen die gphoto2-Befehle durch das Studio (ptpip:127.0.0.1).
+`6d-fernsteuerung <befehl>` – läuft das Studio (immer bei WLAN), gehen die gphoto2-Befehle durch das Studio
+(ptpip:127.0.0.1), auch am Kabel; ohne Studio spricht gphoto2 am Kabel direkt mit der Kamera.
 
 | Befehl | Funktion |
 |---|---|
-| `studio` | Studio starten und die Oberfläche öffnen |
+| `studio` | Studio starten und die Oberfläche öffnen – über WLAN oder am Kabel, je nach Verbindungsart |
 | `stop` | Studio beenden (danach an der Kamera die Fernsteuerung neu starten) |
-| `wlan [ip]` | WLAN-Modus einrichten: Kamera im Netz suchen, Studio starten |
-| `usb` | Zurück auf USB-Kabel |
-| `status` | Zustand der WLAN-Verbindung |
+| `wlan [ip]` | Auf WLAN umschalten: Kamera im Netz suchen (oder die IP nehmen), Studio starten bzw. umschalten |
+| `usb` | Auf das USB-Kabel umschalten; ein laufendes Studio wechselt mit |
+| `status` | Verbindungsart, Studio, Anmeldung der Kamera |
 | `check`, `settings` | Kamera-Infos bzw. ISO, Blende, Zeit, Weißabgleich, Bildqualität, Akku |
 | `options <name>`, `set <name> <wert>` | Mögliche Werte einer Einstellung bzw. ändern, z. B. `set iso 800` |
 | `shoot`, `tether` | Ein Foto auslösen und laden bzw. jedes an der Kamera ausgelöste Foto laden |
@@ -383,6 +391,17 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 | `sim [optionen]`, `sim-cmd <befehl>`, `sim-stop` | Simulierte 6D – siehe [Simulator](#ohne-kamera-der-simulator) |
 
 ## Änderungen
+
+**22.11.2026**
+- **USB-Kabel:** Das Studio geht jetzt auch am Kabel – Livebild, Bulb, Serien, Downloads, Live-Stack und der
+  gphoto2-Zugang wie über WLAN. Umschalten in der Kopfzeile (**WLAN | Kabel**) oder mit `6d-fernsteuerung usb` /
+  `wlan`. Technik: `studio/ptpusb.py` – libusb über ctypes (keine Python-Pakete nötig) und eine Brücke, die für das
+  Studio aussieht wie die PTP/IP-Verbindung.
+- `6d-fernsteuerung usb` beendet das Studio nicht mehr und vergisst die WLAN-IP nicht; die Verbindungsart steht in
+  `~/.gphoto/6d-verbindung`.
+- Geprüft an der echten 6D am Kabel: Anmeldung in unter 1 s, Livebild 15 Bilder/s, ISO ändern, Lupe,
+  Bulb-Testbild mit Download (RAW 19,4 MB, ~10 MB/s), gphoto2 durch das Studio, Umschalten Kabel → WLAN → Kabel.
+  Einzelheiten: [docs/canon-6d-ptpip.md](docs/canon-6d-ptpip.md#usb-kabel-ptp-über-usb).
 
 **20.11.2026**
 - **Rechner:** PixInsight auf einem zweiten Rechner (`rechner/6d-rechner.py`, Anbindung `studio/rechner.py`).
@@ -472,6 +491,7 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 | `studio/gallery.py` | Bildverwaltung: Übersicht, Vorschaubilder, Aussortieren, Übernehmen, Ordner und Aufträge für PixInsight (WBPP) und Siril, Programme finden und öffnen |
 | `studio/pixinsight/` | Skripte für PixInsight ohne Oberfläche: Ereignisskript für WBPP (Fortschritt), Fertig entwickeln |
 | `studio/rechner.py` | Anbindung an 6D Rechner: Einstellungen, Dateien abgleichen, Aufträge, Vorab-Hochladen |
+| `studio/ptpusb.py` | USB-Kabel: libusb über ctypes, PTP-Container auf den Bulk-Endpunkten, Brücke zu PTP/IP |
 | `rechner/6d-rechner.py`, `rechner/6d-rechner.service` | 6D Rechner: Dienst für PixInsight auf einem zweiten Rechner, systemd-Datei |
 | `studio/calib.py` | Kalibrier-Bibliothek: Master-Bias, -Darks, -Flats, -Dark-Flats als FITS, automatische Auswahl (auch nach Optik), Master aus RAWs (κσ-Clipping) |
 | `studio/imaging.py` | RAW (rawpy), JPEG, FITS, XISF (lesen), PNG; EXIF inkl. Sensortemperatur der 6D |

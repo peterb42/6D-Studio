@@ -98,3 +98,24 @@ Gegen die echte Kamera prüfen und hier eintragen, sobald getestet.
 - `GetObjectInfo` (0x1008) → Dateiname ab Offset 52, Größe bei Offset 8; dann `GetObject` (0x1009).
 - Über den iPhone-Hotspot ~**1 MB/s** → RAW (21 MB) ≈ 20 s. Währenddessen warten alle anderen Befehle.
   Idee: `GetPartialObject` (0x101B) in Stücken, damit Bedienung und Livebild weiterlaufen.
+
+## USB-Kabel (PTP über USB)
+
+Geprüft am 22.11.2026 an der echten 6D (Firmware 1.1.9) mit `studio/ptpusb.py`:
+
+- **Wi-Fi muss aus sein** – solange die Wi-Fi-Funktion an ist, meldet sich die 6D nicht am USB.
+- macOS sieht sie als „Canon Digital Camera“, Hersteller 0x04A9. Interface 0 der Klasse 6 (Still Image),
+  Bulk-Endpunkte **0x81** (in) und **0x02** (out), Paketgröße 512 (USB 2.0).
+- Auf dem Mac öffnet der Systemdienst `ptpcamerad` jede angesteckte Kamera; libusb kann das Interface dann nicht
+  belegen. Das Studio (wie `6d-fernsteuerung` für gphoto2) beendet den Dienst und belegt dann.
+- Dieselben Befehle wie über WLAN, dieselbe Session: OpenSession (Transaktion 0), GetDeviceInfo (503 Bytes),
+  GetEvent, SetProp, RemoteRelease/Bulb, Livebild, Lupe, GetPartialObject – nur ohne die PTP/IP-Anmeldung
+  (keine GUID, keine Kopplung, sofort bereit).
+- **Livebild 15 Bilder/s** (Lupe 5×: 13), **Download ~10 MB/s** (RAW 19,4 MB in 2 s). Mit 2-MB-Stücken statt
+  256 KB nicht schneller – das Tempo bestimmt die Kamera.
+- Ein Ende der Verbindung ohne CloseSession stört nicht: Das nächste OpenSession klappt sofort.
+- Schaltet die 6D ab (Abschaltautomatik), verschwindet sie vom USB-Bus; das Studio hält sie mit „Wachhalten“
+  (0x911D) wach, solange es verbunden ist.
+- gphoto2 durch das Studio (ptpip:127.0.0.1) geht am Kabel wie über WLAN – aber nur auf dem Standardport 15740.
+  Mit `ptpip:127.0.0.1:<anderer Port>` brach gphoto2 2.5.32 direkt nach der Anmeldung ab (eigener Testclient auf
+  demselben Port: alles in Ordnung).

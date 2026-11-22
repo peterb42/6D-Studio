@@ -10,7 +10,12 @@
 #       für gphoto2 an und trennt, sobald eine Session endet oder 30 s Ruhe ist.
 #       6D Studio hält EINE Verbindung offen; gphoto2 spricht mit 127.0.0.1.
 #       Bedienoberfläche im Browser:  6d-fernsteuerung studio
-# USB:  WLAN an der Kamera AUS, Kamera per Datenkabel am Mac.
+# USB:  WLAN an der Kamera AUS, Kamera per Datenkabel am Mac:  6d-fernsteuerung usb
+#       Das Studio geht auch am Kabel (umschalten in der Oberfläche oder mit
+#       usb / wlan). Läuft es, gehen auch die gphoto2-Befehle durch das Studio,
+#       sonst spricht gphoto2 direkt mit der Kamera am Kabel.
+# Die Verbindungsart steht in ~/.gphoto/6d-verbindung (usb oder wlan) – Studio
+# und dieses Skript lesen sie beide.
 
 set -u
 SELF="${0:t}"
@@ -22,29 +27,36 @@ OUT="${OUT:-$HOME/Pictures/6D-Tethering}"
 NAME="%Y%m%d-%H%M%S-%n.%C"
 GPDIR="$HOME/.gphoto"
 IPFILE="$GPDIR/6d-wlan-ip"
+MODEFILE="$GPDIR/6d-verbindung"
 PROXY="$HOME/.local/bin/6d-studio"
 PROXY_LOG="$GPDIR/6d-proxy.log"
 PROXY_PORT=15740
 STUDIO_URL="http://127.0.0.1:8066"
+GP_STUDIO=(gphoto2 --port "ptpip:127.0.0.1" --camera "PTP/IP Camera")
 
 # ---------- Verbindungsart ----------
-if [[ -s $IPFILE ]]; then
-  CAM_IP="$(<$IPFILE)"
-  MODE="WLAN"
-  GP=(gphoto2 --port "ptpip:127.0.0.1" --camera "PTP/IP Camera")
-else
-  CAM_IP=""
-  MODE="USB"
-  GP=(gphoto2)
-fi
+# Gemerkt in $MODEFILE; ohne Datei wie früher: WLAN, wenn eine Kamera-IP gemerkt ist.
+CAM_IP=""; [[ -s $IPFILE ]] && CAM_IP="$(<$IPFILE)"
+SAVED=""; [[ -s $MODEFILE ]] && SAVED="$(tr -d '[:space:]' < $MODEFILE)"
+if [[ $SAVED == wlan || ( -z $SAVED && -n $CAM_IP ) ]]; then MODE="WLAN"; else MODE="USB"; fi
+GP=("${GP_STUDIO[@]}")
 
 free_camera() {
-  # Nur für USB: macOS-Dienst ptpcamerad blockiert sonst die Kamera.
-  [[ $MODE == USB ]] && { killall ptpcamerad PTPCamera 2>/dev/null; sleep 0.5; }
+  # Nur für gphoto2 direkt am Kabel: macOS-Dienst ptpcamerad blockiert sonst die Kamera.
+  killall ptpcamerad PTPCamera 2>/dev/null; sleep 0.5
   return 0
 }
 
-# ---------- Vermittler (nur WLAN) ----------
+save_mode() {  # usb | wlan – läuft das Studio, schaltet es gleich um
+  mkdir -p "$GPDIR"; echo "$1" > "$MODEFILE"
+  if [[ -n $(proxy_pid) ]]; then
+    local body="{\"mode\": \"$1\"${2:+, \"ip\": \"$2\"}}"
+    curl -s -X POST -H 'Content-Type: application/json' -d "$body" "$STUDIO_URL/api/connection" >/dev/null &&
+      echo "6D Studio schaltet um."
+  fi
+}
+
+# ---------- Vermittler (6D Studio) ----------
 proxy_pid() { lsof -nP -t -iTCP@127.0.0.1:$PROXY_PORT -sTCP:LISTEN 2>/dev/null | head -1; }
 
 proxy_ready() {  # läuft der Vermittler und ist die Kamera aktuell angemeldet?
@@ -54,10 +66,10 @@ proxy_ready() {  # läuft der Vermittler und ist die Kamera aktuell angemeldet?
   [[ $last == *"✅"* ]]
 }
 
-start_proxy() {
+start_proxy() {  # das Studio liest die Verbindungsart selbst ($MODEFILE, $IPFILE)
   [[ -n $(proxy_pid) ]] && return 0
   mkdir -p "$GPDIR"
-  nohup "$PY" -I -u "$PROXY" "$CAM_IP" > "$PROXY_LOG" 2>&1 &
+  nohup "$PY" -I -u "$PROXY" > "$PROXY_LOG" 2>&1 &
   disown
   sleep 1
 }
@@ -68,12 +80,18 @@ stop_proxy() {
   return 0
 }
 
-ensure_camera() {  # vor jedem Befehl: im WLAN-Modus Vermittler starten und auf Kamera warten
-  free_camera
-  [[ $MODE == WLAN ]] || return 0
+ensure_camera() {  # vor jedem Befehl: WLAN – Studio starten und auf die Kamera warten; USB – Studio, wenn es läuft
+  if [[ $MODE == USB && -z $(proxy_pid) ]]; then
+    free_camera; GP=(gphoto2); return 0             # ohne Studio: gphoto2 direkt am Kabel
+  fi
   start_proxy
+  GP=("${GP_STUDIO[@]}")
   proxy_ready && return 0
-  echo "Warte auf die 6D ($CAM_IP) – an der Kamera Wi-Fi-Funktion → „Fernsteuerung (EOS Utility)“ starten …"
+  if [[ $MODE == USB ]]; then
+    echo "Warte auf die 6D am Kabel (Wi-Fi an der Kamera aus, Kamera an) …"
+  else
+    echo "Warte auf die 6D ($CAM_IP) – an der Kamera Wi-Fi-Funktion → „Fernsteuerung (EOS Utility)“ starten …"
+  fi
   for i in {1..120}; do
     proxy_ready && { echo "Kamera verbunden."; return 0; }
     sleep 1
@@ -123,8 +141,8 @@ wlan_setup() {  # [ip]
   [[ -n $ip ]] || { echo "Keine Kamera gefunden. Ist die 6D im Modus „Fernsteuerung (EOS Utility)“ und im selben Netz? Sonst IP angeben: $SELF wlan 172.20.10.3"; return 1; }
   mkdir -p "$GPDIR"; echo "$ip" > "$IPFILE"
   echo "Kamera-IP: $ip – WLAN-Modus aktiv."
-  stop_proxy >/dev/null
-  CAM_IP=$ip; MODE=WLAN; GP=(gphoto2 --port "ptpip:127.0.0.1" --camera "PTP/IP Camera")
+  save_mode wlan "$ip"
+  CAM_IP=$ip; MODE=WLAN
   ensure_camera && "${GP[@]}" --get-config batterylevel 2>&1 | grep -E "^Current" | sed 's/Current/Akku/'
 }
 
@@ -132,15 +150,15 @@ usage() {
   cat <<EOF
 Aufruf: $SELF <befehl> [argumente]      Verbindung: $MODE${CAM_IP:+ ($CAM_IP)}
 
-  studio             Bedienoberfläche im Browser öffnen (Livebild, Lupe, Fokus, Bulb, ISO/Blende/Zeit)
-  wlan [ip]          WLAN-Modus einrichten (Kamera suchen, Vermittler starten)
+  studio             Bedienoberfläche im Browser öffnen (Livebild, Lupe, Fokus, Bulb, ISO/Blende/Zeit) – WLAN oder Kabel
+  wlan [ip]          WLAN-Modus einrichten (Kamera suchen, Studio starten bzw. umschalten)
   stop               6D Studio / Vermittler beenden
   sim [optionen]     Simulierte 6D + Studio auf http://127.0.0.1:8067 (zum Entwickeln ohne Kamera)
                      z. B. sim --raw --sky-speed 60  (RAW+JPEG, Himmel dreht sich 60× schneller)
   sim-cmd <befehl>   Befehl an den Simulator, z. B. sim-cmd cap on | temp 20 | mode Av | panel on | status
   sim-stop           Simulator beenden
-  usb                Zurück auf USB-Kabel (beendet den Vermittler)
-  status             Zustand der WLAN-Verbindung anzeigen
+  usb                Auf das USB-Kabel umschalten (ein laufendes Studio wechselt mit)
+  status             Verbindungsart und Zustand anzeigen
   check              Kamera-Infos anzeigen
   shoot              Ein Foto auslösen und auf den Mac laden
   tether             Jedes an der Kamera ausgelöste Foto automatisch auf den Mac laden (Strg+C beendet)
@@ -160,11 +178,14 @@ cmd="${1:-help}"
 
 case "$cmd" in
   studio)
-    [[ $MODE == WLAN ]] || { echo "6D Studio braucht den WLAN-Modus – zuerst: $SELF wlan"; exit 1; }
     start_proxy
     for i in {1..20}; do curl -s -o /dev/null "$STUDIO_URL/api/state" && break; sleep 0.3; done
     open "$STUDIO_URL"
-    echo "6D Studio: $STUDIO_URL  (an der Kamera Wi-Fi-Funktion → „Fernsteuerung (EOS Utility)“ starten)"
+    if [[ $MODE == USB ]]; then
+      echo "6D Studio: $STUDIO_URL  – am USB-Kabel (Wi-Fi an der Kamera aus); umschalten oben rechts oder: $SELF wlan"
+    else
+      echo "6D Studio: $STUDIO_URL  – WLAN $CAM_IP (an der Kamera Wi-Fi-Funktion → „Fernsteuerung (EOS Utility)“)"
+    fi
     ;;
   stop)
     stop_proxy
@@ -177,6 +198,7 @@ case "$cmd" in
     nohup "$PY" -I -u "$ROOT/sim/sim6d.py" --port 15741 --control "$GPDIR/6d-sim-cmd" "$@" \
       > "$GPDIR/6d-sim.log" 2>&1 &!
     CAM_PORT=15741 GPHOTO_PORT=15742 STUDIO_PORT=8067 OUT="$HOME/Pictures/6D-Tethering/Simulator" \
+      CAM_MODE_FILE="$GPDIR/6d-sim-verbindung" CAM_IP_FILE="$GPDIR/6d-sim-ip" \
       nohup "$PY" -I -u "$ROOT/studio/6d-studio.py" 127.0.0.1 > "$GPDIR/6d-sim-studio.log" 2>&1 &!
     for i in {1..30}; do curl -s -o /dev/null http://127.0.0.1:8067/api/state && break; sleep 0.2; done
     open http://127.0.0.1:8067
@@ -196,19 +218,23 @@ case "$cmd" in
     wlan_setup "${1:-}"
     ;;
   usb)
-    stop_proxy; rm -f "$IPFILE"; echo "Umgeschaltet auf USB."
+    save_mode usb
+    echo "Umgeschaltet auf das USB-Kabel – an der Kamera Wi-Fi aus, Kabel einstecken, Kamera an."
     ;;
   status)
-    echo "Verbindung: $MODE${CAM_IP:+ ($CAM_IP)}"
-    if [[ $MODE == WLAN ]]; then
-      [[ -n $(proxy_pid) ]] && echo "Vermittler läuft (PID $(proxy_pid))." || echo "Vermittler läuft nicht."
+    echo "Verbindung: $MODE${CAM_IP:+ (WLAN-IP $CAM_IP)}"
+    if [[ -n $(proxy_pid) ]]; then
+      echo "6D Studio läuft (PID $(proxy_pid)) – $STUDIO_URL"
       proxy_ready && echo "Kamera angemeldet." || echo "Kamera nicht angemeldet."
       echo "--- letzte Meldungen:"; tail -5 "$PROXY_LOG" 2>/dev/null
+    else
+      echo "6D Studio läuft nicht."
+      [[ $MODE == USB ]] && gphoto2 --auto-detect 2>/dev/null | tail -n +3
     fi
     ;;
   check)
     ensure_camera
-    [[ $MODE == USB ]] && gphoto2 --auto-detect
+    [[ $MODE == USB && -z $(proxy_pid) ]] && gphoto2 --auto-detect
     "${GP[@]}" --summary 2>&1 | head -12
     ;;
   shoot)

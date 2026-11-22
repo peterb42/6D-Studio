@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""6D Studio – WLAN-Fernsteuerung der Canon EOS 6D mit Bedienoberfläche im Browser.
+"""6D Studio – Fernsteuerung der Canon EOS 6D per WLAN oder USB-Kabel mit Bedienoberfläche im Browser.
 
-Ein Prozess hält die PTP/IP-Verbindung zur Kamera und bietet:
+Ein Prozess hält die Verbindung zur Kamera – PTP/IP über WLAN oder PTP über USB (ptpusb.py: eine Brücke, die für
+das Studio aussieht wie die PTP/IP-Verbindung) – und bietet:
   * Bedienoberfläche   http://127.0.0.1:8066
       Livebild mit 5×/10×-Lupe der Kamera, Fokusantrieb, Schärfe-Anzeige für Sterne,
       Bulb Start/Stopp mit Timer, ISO/Blende/Zeit, automatischer Download,
@@ -14,8 +15,9 @@ Eigenheiten der 6D, die hier abgefangen werden:
   * Endet eine Session oder TCP-Verbindung, beendet die 6D die Fernsteuerung.
   * Ohne regelmäßige Abfragen trennt die 6D nach ~30 s.
 
-Aufruf: 6d-studio [kamera-ip]
-Umgebung: CAM_PORT (15740), GPHOTO_PORT (15740), STUDIO_PORT (8066), OUT (~/Pictures/6D-Tethering)
+Aufruf: 6d-studio [kamera-ip | usb]   – ohne Angabe: Verbindungsart aus ~/.gphoto/6d-verbindung (usb oder wlan)
+Umgebung: CAM_PORT (15740), GPHOTO_PORT (15740), STUDIO_PORT (8066), OUT (~/Pictures/6D-Tethering),
+          CAM_MODE (usb | wlan, statt der Datei), GPHOTO_DIR (~/.gphoto)
 """
 import collections
 import json
@@ -33,9 +35,11 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-GPDIR = os.path.expanduser("~/.gphoto")
+GPDIR = os.path.expanduser(os.environ.get("GPHOTO_DIR", "~/.gphoto"))
 SETTINGS = os.path.join(GPDIR, "settings")
-IPFILE = os.path.join(GPDIR, "6d-wlan-ip")
+# Kamera-IP und Verbindungsart („usb“ oder „wlan“) – auch für 6d-fernsteuerung; das Simulator-Studio hat eigene
+IPFILE = os.environ.get("CAM_IP_FILE") or os.path.join(GPDIR, "6d-wlan-ip")
+MODE_FILE = os.environ.get("CAM_MODE_FILE") or os.path.join(GPDIR, "6d-verbindung")
 
 
 def _default_ip():
@@ -46,7 +50,21 @@ def _default_ip():
         return "172.20.10.3"
 
 
-CAM_IP = sys.argv[1] if len(sys.argv) > 1 else _default_ip()
+def _saved_mode():
+    """Gemerkte Verbindungsart; ohne Datei wie früher: WLAN, wenn eine Kamera-IP gemerkt ist, sonst USB."""
+    try:
+        with open(MODE_FILE) as f:
+            mode = f.read().strip().lower()
+        if mode in ("usb", "wlan"):
+            return mode
+    except OSError:
+        pass
+    return "wlan" if os.path.isfile(IPFILE) and os.path.getsize(IPFILE) else "usb"
+
+
+_ARG = sys.argv[1] if len(sys.argv) > 1 else ""
+CAM_MODE = os.environ.get("CAM_MODE") or ("usb" if _ARG == "usb" else "wlan" if _ARG else _saved_mode())
+CAM_IP = _ARG if _ARG and _ARG != "usb" else _default_ip()
 # Ports – per Umgebungsvariable änderbar, damit ein Studio gegen den Simulator (sim/sim6d.py)
 # parallel zum echten laufen kann.
 CAM_PORT = int(os.environ.get("CAM_PORT", "15740"))         # PTP/IP-Port der Kamera
@@ -66,6 +84,7 @@ import calib  # noqa: E402
 import gallery  # noqa: E402
 import imaging  # noqa: E402
 import livestack  # noqa: E402
+import ptpusb  # noqa: E402
 import rechner  # noqa: E402
 
 LIBRARY_DIR = os.path.join(ASTRO_DIR, calib.LIBRARY_FOLDER)
@@ -79,7 +98,8 @@ PROBE_RESP_PKT = struct.pack("<II", 8, PROBE_RESP)
 
 GET_DEVICE_INFO, OPEN_SESSION, CLOSE_SESSION = 0x1001, 0x1002, 0x1003
 GET_OBJECT_INFO, GET_OBJECT, GET_PARTIAL_OBJECT = 0x1008, 0x1009, 0x101B
-DOWNLOAD_CHUNK = 256 * 1024          # Download in Stücken: Bulb-Befehle kommen dazwischen dran
+DOWNLOAD_CHUNK = 256 * 1024          # Download in Stücken: Bulb-Befehle kommen dazwischen dran (Kabel: ~10 MB/s,
+                                     # mit 2-MB-Stücken nicht schneller – das Tempo bestimmt die 6D)
 SERIES_FILE_GRACE = 0.8              # nach dem ersten Bild kurz warten (RAW+JPEG = zwei Dateien)
 REMOTE_RELEASE, SET_PROP, SET_REMOTE_MODE, SET_EVENT_MODE, GET_EVENT = 0x910F, 0x9110, 0x9114, 0x9115, 0x9116
 TRANSFER_COMPLETE, BULB_START, BULB_END, RELEASE_ON, RELEASE_OFF = 0x9117, 0x9125, 0x9126, 0x9128, 0x9129
@@ -351,7 +371,11 @@ class Studio:
         self._rechner_known = {}            # Sitzung auf dem Rechner → {Pfad: {size}} (was schon oben ist)
         self._rechner_sync_lock = threading.Lock()
         self.rechner_live = None            # {session, uploaded, total, time, error}
-        # Verbindung
+        # Verbindung: WLAN (PTP/IP) oder USB-Kabel (ptpusb.Bridge – sieht für den Rest aus wie PTP/IP)
+        self.conn_mode, self.cam_ip = CAM_MODE, CAM_IP
+        self.bridge = self._old_bridge = None
+        self.usb_open = ptpusb.open_camera  # Tests: Ersatzgerät
+        self._login_socks = []              # Sockets der laufenden WLAN-Anmeldung (Umschalten bricht sie ab)
         self.cam_cmd = self.cam_evt = None
         self.cli_cmd = self.cli_evt = None
         self.cmd_ack = self.evt_ack = None
@@ -371,48 +395,92 @@ class Studio:
             self.logs.append(line)
 
     # ---------- Anmeldung
+    def _mode_check(self, mode):
+        if self.conn_mode != mode:
+            raise CameraLost("Verbindungsart gewechselt")
+
     def login(self, guid, name):
+        """WLAN: PTP/IP-Anmeldung (Befehls- und Ereigniskanal), dann die Session."""
+        if guid is None:
+            raise CameraLost("Keine WLAN-Kopplung (ptp2_ip-GUID in ~/.gphoto/settings) – zuerst koppeln, "
+                             "siehe README „Erstes Koppeln“")
+        ip = self.cam_ip
         with self.lock:
             self.status = "Warte auf die Kamera"
-        self.log("Warte auf die Kamera", CAM_IP, "…")
-        while not ping(CAM_IP):
+        self.log("Warte auf die Kamera", ip, "…")
+        while not ping(ip):
+            self._mode_check("wlan")
             time.sleep(1)
         while True:
+            self._mode_check("wlan")
             try:
-                cmd = socket.create_connection((CAM_IP, CAM_PORT), timeout=5)
+                cmd = socket.create_connection((ip, CAM_PORT), timeout=5)
                 break
             except OSError:
                 time.sleep(1)
+        self._login_socks = [cmd]
         with self.lock:
             self.status = "Melde mich an"
         self.log("Melde mich bei der Kamera an (bis 90 s, ggf. an der Kamera OK drücken) …")
         body = guid + (name + "\0").encode("utf-16-le") + struct.pack("<HH", 0, 1)
         cmd.sendall(struct.pack("<II", 8 + len(body), INIT_CMD_REQ) + body)
         ack = recv_packet(cmd, 90)
+        self._mode_check("wlan")
         if ptype(ack) == INIT_FAIL:
             raise CameraLost("Kamera lehnt die Anmeldung ab – an der Kamera die Kopplung neu starten")
         if ptype(ack) != INIT_CMD_ACK:
             raise CameraLost("unerwartete Antwort Typ %d" % ptype(ack))
         conn_id = struct.unpack_from("<I", ack, 8)[0]
-        evt = socket.create_connection((CAM_IP, CAM_PORT), timeout=10)
+        evt = socket.create_connection((ip, CAM_PORT), timeout=10)
+        self._login_socks.append(evt)
         evt.sendall(struct.pack("<III", 12, INIT_EVT_REQ, conn_id))
         evt_ack = recv_packet(evt, 30)
         if ptype(evt_ack) != INIT_EVT_ACK:
             raise CameraLost("Event-Kanal abgelehnt")
+        for s in (cmd, evt):
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        self._start_session(cmd, evt, ack, evt_ack, "WLAN %s" % ip)
 
+    def login_usb(self):
+        """USB-Kabel: Kamera öffnen, Brücke starten, dann dieselbe Session wie über WLAN."""
+        with self.lock:
+            self.status = "Warte auf die Kamera am Kabel"
+        self.log("Warte auf die Kamera am USB-Kabel (Wi-Fi an der Kamera aus) …")
+        if self._old_bridge:                             # hängt die alte Brücke noch in einem Transfer: abwarten
+            self._old_bridge.done.wait(ptpusb.READ_TIMEOUT + 5)
+            self._old_bridge = None
+        said = None
+        while True:
+            self._mode_check("usb")
+            try:
+                dev = self.usb_open(log=self.log)
+                break
+            except ptpusb.UsbError as e:
+                if str(e) != said:                       # jede neue Meldung einmal, nicht alle 2 s
+                    said = str(e)
+                    self.log("⏳ %s" % e)
+                    with self.lock:
+                        self.status = "Warte auf die Kamera am Kabel – %s" % e
+                time.sleep(2)
+        self.log("USB: Kamera gefunden (%s)" % dev.where)
+        self.bridge = ptpusb.Bridge(ptpusb.PtpUsb(dev, log=self.log), log=self.log)
+        cmd_ack, evt_ack = ptpusb.init_acks()
+        self._start_session(self.bridge.cmd, self.bridge.evt, cmd_ack, evt_ack, "USB")
+
+    def _start_session(self, cmd, evt, cmd_ack, evt_ack, how):
+        """OpenSession, GetDeviceInfo, dann der Kamera-Thread mit cmd/evt – gleich für WLAN und USB."""
         rc, _ = sync_op(cmd, 0, OPEN_SESSION, 1)
         if rc not in (RC_OK, RC_SESSION_OPEN):
             raise CameraLost("OpenSession abgelehnt: " + rc_text(rc))
         rc, info = sync_op(cmd, 1, GET_DEVICE_INFO)
         supported, model = parse_device_info(info) if rc == RC_OK else (set(), "")
-
         for s in (cmd, evt):
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             s.settimeout(None)
         with self.lock:
+            self._login_socks = []
             self.cam_cmd, self.cam_evt = cmd, evt
             self.r_cam_cmd, self.r_cam_evt = Reader(cmd), Reader(evt)
-            self.cmd_ack, self.evt_ack = ack, evt_ack
+            self.cmd_ack, self.evt_ack = cmd_ack, evt_ack
             self.tid = 1
             self.inflight = None
             self.client_queue = []
@@ -428,7 +496,8 @@ class Studio:
         names = {BULB_START: "BulbStart", RELEASE_ON: "RemoteReleaseOn", REMOTE_RELEASE: "RemoteRelease",
                  GET_VF_DATA: "Livebild", ZOOM: "Lupe", DRIVE_LENS: "Fokusantrieb", KEEP_DEVICE_ON: "Wachhalten"}
         self.log("Kamera kann:", ", ".join(n for c, n in names.items() if c in supported) or "?")
-        self.log("✅ Kamera verbunden (%s), Session offen – Oberfläche: http://127.0.0.1:%d" % (self.model, WEB_PORT))
+        self.log("✅ Kamera verbunden (%s, %s), Session offen – Oberfläche: http://127.0.0.1:%d" % (
+            self.model, how, WEB_PORT))
 
     def remote_on_ops(self):
         return [Op(SET_REMOTE_MODE, (1,), name="Fernsteuermodus"), Op(SET_EVENT_MODE, (1,), name="Ereignismodus")]
@@ -442,13 +511,17 @@ class Studio:
     def disconnect(self):
         with self.lock:
             self.connected = False
-            for s in (self.cam_cmd, self.cam_evt, self.cli_cmd, self.cli_evt):
+            if self.bridge:                          # USB: die Brücke gibt das Kabel in ihrem Faden frei
+                self.bridge.close()
+                self._old_bridge, self.bridge = self.bridge, None
+            for s in self._login_socks + [self.cam_cmd, self.cam_evt, self.cli_cmd, self.cli_evt]:
                 if s:
                     try:
                         s.close()
                     except OSError:
                         pass
             self.cam_cmd = self.cam_evt = self.cli_cmd = self.cli_evt = None
+            self._login_socks = []
             pending = []
             if self.inflight and self.inflight.get("op"):
                 pending.append(self.inflight["op"])
@@ -698,18 +771,71 @@ class Studio:
         lst.listen(4)
         self.gphoto_port = lst.getsockname()[1]
         while True:
+            mode = self.conn_mode
             try:
-                self.login(guid, name)
+                if mode == "usb":
+                    self.login_usb()
+                else:
+                    self.login(guid, name)
                 self.run(lst)
-            except (CameraLost, ConnectionError, OSError, ValueError) as e:
-                self.log("❌", e)
+            except (CameraLost, ConnectionError, OSError, ValueError, ptpusb.UsbError) as e:
+                if self.conn_mode == mode:
+                    self.log("❌", e)
             except Exception as e:
                 self.log("❌ Unerwarteter Fehler:", repr(e))
             self.disconnect()
+            if self.conn_mode != mode:                   # umgeschaltet: gleich mit der neuen Verbindungsart
+                continue
             with self.lock:
-                self.status = "Getrennt – an der Kamera „Fernsteuerung (EOS Utility)“ neu starten"
+                self.status = ("Getrennt – Kabel und Kamera prüfen" if mode == "usb" else
+                               "Getrennt – an der Kamera „Fernsteuerung (EOS Utility)“ neu starten")
             self.log("Warte auf erneute Verbindung der Kamera …")
-            time.sleep(3)
+            for _ in range(15):
+                if self.conn_mode != mode:
+                    break
+                time.sleep(0.2)
+
+    # ---------- Verbindungsart: WLAN oder Kabel
+    def connection_info(self):
+        return {"mode": self.conn_mode, "ip": self.cam_ip, "usb": ptpusb.missing()}
+
+    def act_connection(self, body):
+        """Zwischen WLAN und USB-Kabel umschalten (gemerkt in ~/.gphoto/6d-verbindung, auch für 6d-fernsteuerung).
+        Die bestehende Verbindung wird getrennt, der Kamera-Thread verbindet gleich neu."""
+        mode = body.get("mode")
+        if mode not in ("usb", "wlan"):
+            raise CameraError("Verbindungsart: usb oder wlan")
+        ip = (body.get("ip") or "").strip()
+        if ip and not re.match(r"^\d{1,3}(\.\d{1,3}){3}$", ip):
+            raise CameraError("IP-Adresse der Kamera wie 172.20.10.3")
+        if (self.bulb or self.series_active()) and mode != self.conn_mode:
+            raise CameraError("Erst die Belichtung bzw. Serie beenden – Umschalten trennt die Kamera")
+        if mode == "usb" and ptpusb.missing():
+            raise CameraError(ptpusb.missing())
+        os.makedirs(GPDIR, exist_ok=True)
+        if mode == "wlan" and ip:
+            with open(IPFILE, "w") as f:
+                f.write(ip + "\n")
+        with open(MODE_FILE, "w") as f:
+            f.write(mode + "\n")
+        changed = mode != self.conn_mode or (mode == "wlan" and ip and ip != self.cam_ip)
+        with self.lock:
+            if ip:
+                self.cam_ip = ip
+            self.conn_mode = mode
+            if changed:
+                self.status = "Wechsle auf %s" % ("das Kabel" if mode == "usb" else "WLAN")
+                for s in self._login_socks + [self.cam_cmd]:   # bricht Anmeldung bzw. Verbindung ab
+                    if s:
+                        try:
+                            s.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+        if changed:
+            self.log("Verbindung: %s" % ("USB-Kabel – an der Kamera Wi-Fi aus, Kabel einstecken" if mode == "usb"
+                                         else "WLAN %s – an der Kamera Wi-Fi an, „Fernsteuerung (EOS Utility)“"
+                                         % self.cam_ip))
+        return {"connection": self.connection_info()}
 
     # ---------- Auswertung von Kameradaten (läuft im Kamera-Thread, muss kurz sein)
     def on_events(self, op):
@@ -1879,7 +2005,8 @@ class Studio:
             if len(self.fps_times) >= 2 and time.time() - self.fps_times[-1] < 2:
                 fps = (len(self.fps_times) - 1) / max(self.fps_times[-1] - self.fps_times[0], 0.001)
             return {
-                "connected": self.connected, "status": self.status, "model": self.model, "ip": CAM_IP,
+                "connected": self.connected, "status": self.status, "model": self.model, "ip": self.cam_ip,
+                "connection": self.connection_info(),
                 "mode": AE_MODES.get(ae, "?" if ae is None else str(ae)), "bulb_mode": self.is_bulb_mode(),
                 "iso": prop(P_ISO, fmt_iso), "aperture": prop(P_APERTURE, fmt_aperture),
                 "shutter": prop(P_SHUTTER, fmt_shutter),
@@ -1921,6 +2048,7 @@ class Handler(BaseHTTPRequestHandler):
                "/api/gallery/script": "act_gallery_script", "/api/gallery/check": "act_gallery_check",
                "/api/gallery/stack": "act_gallery_stack", "/api/gallery/finish": "act_gallery_finish",
                "/api/rechner/config": "act_rechner_config", "/api/rechner/check": "act_rechner_check",
+               "/api/connection": "act_connection",
                "/api/library/delete": "act_library_delete", "/api/library/build": "act_library_build"}
 
     def log_message(self, *a):
@@ -2025,7 +2153,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    guid = load_guid()
+    try:
+        guid = load_guid()
+    except (OSError, SystemExit):
+        guid = None                                  # nur das Kabel geht; WLAN meldet „zuerst koppeln“
     name = socket.gethostname().split(".")[0]
     studio = Studio()
     Handler.studio = studio

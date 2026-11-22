@@ -17,6 +17,8 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ["OUT"] = tempfile.mkdtemp(prefix="6d-sim-test-")
+os.environ["CAM_MODE"] = "wlan"                                       # Simulator über PTP/IP, nicht die gemerkte Art
+os.environ["GPHOTO_DIR"] = tempfile.mkdtemp(prefix="6d-sim-gphoto-")  # ~/.gphoto bleibt unberührt
 
 
 def load(name, rel):

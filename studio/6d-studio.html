@@ -22,6 +22,10 @@ header h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.2px}
   background:var(--panel);color:var(--muted);font-size:13px}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--warn);flex:none}
 .pill.ok .dot{background:var(--ok)} .pill.err .dot{background:var(--err)}
+.seg{display:inline-flex}
+.seg .btn{border-radius:0;padding:4px 10px}
+.seg .btn:first-child{border-radius:7px 0 0 7px}
+.seg .btn:last-child{border-radius:0 7px 7px 0;margin-left:-1px}
 .badge{padding:3px 9px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);font-weight:650;font-size:13px}
 .spacer{flex:1}
 main{display:grid;grid-template-columns:minmax(0,1fr) 370px;gap:14px;padding:14px;align-items:start}
@@ -190,6 +194,7 @@ body.night #red{display:block}
 <header>
   <h1>6D Studio</h1>
   <span id="conn" class="pill"><span class="dot"></span><span id="connText">Verbinde …</span></span>
+  <span class="seg" id="connMode" title="Verbindung zur Kamera"><button class="btn" data-m="wlan">WLAN</button><button class="btn" data-m="usb">Kabel</button></span>
   <span class="badge" id="mode" title="Stellung des Moduswahlrads">Modus –</span>
   <span class="spacer"></span>
   <span class="hint" id="out"></span>
@@ -538,7 +543,12 @@ function fillSelect(id, p, disabled) {
 function render() {
   const lv = S.liveview, b = S.bulb;
   $('#conn').className = 'pill ' + (S.connected ? 'ok' : S.status.startsWith('Getrennt') ? 'err' : '');
-  $('#connText').textContent = S.connected ? `${S.model} · ${S.ip}` : S.status + ' …';
+  const cm = S.connection || {};
+  $('#connText').textContent = S.connected ? `${S.model} · ${cm.mode === 'usb' ? 'USB-Kabel' : 'WLAN ' + S.ip}` : S.status + ' …';
+  $$('#connMode .btn').forEach(x => x.classList.toggle('on', x.dataset.m === cm.mode));
+  $('#connMode [data-m=wlan]').title = `Über WLAN (Kamera ${cm.ip || '?'}) – an der Kamera Wi-Fi-Funktion → „Fernsteuerung (EOS Utility)“`
+    + (cm.mode === 'wlan' ? '. Klick: andere IP-Adresse' : '');
+  $('#connMode [data-m=usb]').title = cm.usb || 'Über das USB-Kabel – an der Kamera Wi-Fi aus, Kabel einstecken';
   $('#mode').textContent = 'Modus ' + (S.connected ? S.mode : '–');
   $('#out').textContent = 'Fotos: ' + S.out.replace(/^\/Users\/[^/]+/, '~');
 
@@ -1156,6 +1166,21 @@ const fmtDur = s => s >= 60 ? `${Math.floor(s / 60)} min ${String(Math.round(s %
 const FRAME_GROUPS = ['lights', 'darks', 'biases', 'flats', 'darkflats'];
 const galDate = d => d ? d.split('-').reverse().join('.') : '';
 const galThumb = (rel, size) => `/api/gallery/thumb?root=${enc(GAL.root)}&rel=${enc(rel)}&size=${size || 360}`;
+// Verbindungsart umschalten: WLAN ↔ USB-Kabel (das Studio trennt und verbindet gleich neu)
+$('#connMode').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-m]');
+  if (!b || !S) return;
+  const m = b.dataset.m, cm = S.connection || {};
+  let ip;
+  if (m === cm.mode) {
+    if (m !== 'wlan') return;
+    ip = prompt('IP-Adresse der Kamera im WLAN', cm.ip || '');
+    if (!ip || ip.trim() === cm.ip) return;
+  } else if (S.connected && !confirm(`Auf ${m === 'usb' ? 'das USB-Kabel' : 'WLAN'} umschalten? Die Verbindung zur Kamera wird dafür getrennt.`)) return;
+  const j = await apiJson('/api/connection', {mode: m, ip});
+  if (j) toast(m === 'usb' ? 'USB-Kabel: an der Kamera Wi-Fi aus, Kabel einstecken, Kamera an'
+                           : 'WLAN: an der Kamera Wi-Fi an → „Fernsteuerung (EOS Utility)“', 'info');
+});
 async function apiJson(path, body) {                    // wie api(), liefert aber die ganze Antwort
   try {
     const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
