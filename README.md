@@ -10,7 +10,8 @@ gebaut für Nachtaufnahmen des Sternenhimmels:
   passender Masters
 - **Bildverwaltung** für Sitzungen, Einzelaufnahmen und Live-Stacks: ansehen, aussortieren, übernehmen, in
   installierten Programmen öffnen; **stapeln und fertig entwickeln mit PixInsight (WBPP) oder Siril** auf Knopfdruck –
-  auch auf einem **zweiten Rechner** (z. B. Linux-PC mit Grafikkarte, über Tailscale)
+  auch auf einem **zweiten Rechner** (Linux-PC mit Grafikkarte, im Heimnetz oder über Tailscale), dort mit
+  KI-Entrauschen auf der Grafikkarte
 
 ```
  Browser ──HTTP :8066──┐                          ┌─ PTP/IP :15740 (WLAN) ──────────┐
@@ -40,8 +41,8 @@ Befehle: `6d-fernsteuerung` ohne Argument (siehe [Kommandozeile](#kommandozeile)
 **Typische Nacht:** Livebild an → Stern anklicken, Doppelklick (Lupe 10×), scharfstellen → Objektiv auf MF →
 Live-Stack starten → Light-Serie starten → zwischendurch auf „Live-Stack“ schauen, Bildanalyse lesen → direkt
 danach Darks über „Geführt aufnehmen …“ (gleiche Temperatur) → vor dem Abbauen Flats (Fokus und Blende nicht
-anfassen) → Bias gern später zu Hause → am nächsten Tag in **Bilder** aussortieren und an PixInsight oder Siril
-übergeben. Ausführlich: [docs/stacking-und-kalibrierung.md](docs/stacking-und-kalibrierung.md),
+anfassen) → Bias gern später zu Hause → am nächsten Tag in **Bilder** aussortieren, stapeln und fertig entwickeln
+– auf dem Mac mit PixInsight oder Siril, oder mit PixInsight auf dem [Rechner](docs/rechner.md#was-wo-läuft). Ausführlich: [docs/stacking-und-kalibrierung.md](docs/stacking-und-kalibrierung.md),
 [docs/nachbearbeitung.md](docs/nachbearbeitung.md).
 
 ## Funktionen im Einzelnen
@@ -270,8 +271,9 @@ Wahl merkt sich der Browser).
      40 GB Zwischenbilder.
    - Oder nur **Ordner für WBPP** bzw. **Siril-Skript**, zum Starten von Hand.
 3. **Fertig entwickeln** – für jeden Stapel der Sitzung (PixInsight, Siril oder Live-Stack, FITS oder XISF):
-   - **PixInsight:** GradientCorrection, Hintergrund neutralisieren, Farbkalibrierung, MultiscaleAdaptiveStretch,
-     Grünstich weg → `<Stapel>_fertig-pi.jpg` und `.tif` (16 Bit), etwa 20 s;
+   - **PixInsight:** GradientCorrection, Hintergrund neutralisieren, Farbkalibrierung, KI-Entrauschen (MLDenoise,
+     nur mit Modelldatei), MultiscaleAdaptiveStretch, Grünstich weg → `<Stapel>_fertig-pi.jpg` und `.tif`
+     (16 Bit), etwa 20 s, mit Entrauschen auf dem M1 gut 2 min;
    - **Siril:** Hintergrund und Gradient, Grünstich, strecken → `<Stapel>_fertig.jpg` und `.tif`, etwa 4 s.
 
    Das Bild öffnet sich gleich groß; beim Stapel steht, womit er fertig ist. **Öffnen …** gibt den Stapel an das
@@ -319,15 +321,19 @@ von unten nach oben, ältere dreht es vor der Benutzung um; PixInsight beachtet 
 Siril 1.4 liest auch XISF. Siehe [docs/nachbearbeitung.md](docs/nachbearbeitung.md).
 
 **Rechner (PixInsight auf einem zweiten Rechner):** Auf dem PC läuft `rechner/6d-rechner.py` – ein Dienst ohne
-Oberfläche, nur Python, erreichbar über Tailscale. Im Studio: **+ Rechner** (Adresse und Schlüssel), danach gibt es
-**Rechner** als drittes Programm neben PixInsight und Siril.
+Oberfläche, nur Python, erreichbar im Heimnetz (talos: `http://192.168.0.144:8090`) oder über Tailscale. Im Studio:
+**+ Rechner** (Adresse und Schlüssel), danach gibt es **Rechner** als drittes Programm neben PixInsight und Siril.
 - **Auf dem Rechner stapeln:** Export wie für WBPP, Abgleich mit dem Rechner (fehlende Rohbilder hoch, nicht mehr
   passende dort weg), WBPP dort mit Fortschritt im Studio, Master-Light zurück nach `pixinsight/`.
-- **Auf dem Rechner entwickeln:** Stapel hoch (wenn er dort fehlt), `6d-fertig.js` dort, JPEG und TIFF zurück.
+- **Auf dem Rechner entwickeln:** Stapel hoch (wenn er dort fehlt), `6d-fertig.js` dort – mit KI-Entrauschen auf
+  der Grafikkarte, wenn dort ein MLDenoise-Modell liegt –, JPEG und TIFF zurück.
 - **Vorab hochladen** (wahlweise): neue Rohbilder der laufenden Sitzungen alle 20 s – nur, was der Export auch nähme.
 
-Einrichtung (Ubuntu, NVIDIA, PixInsight, Xvfb, Tailscale, systemd), Datenmengen und Schnittstelle:
-[docs/rechner.md](docs/rechner.md).
+Der Mac bleibt die Station an der Kamera: Aufnahme, Live-Stack, Bibliothek, Prüfen, Aussortieren und alles mit
+Siril laufen nur dort. Der Rechner übernimmt WBPP und das Fertig-Entwickeln mit PixInsight; auf talos ist WBPP
+etwa 1,4× so schnell wie auf dem M1, das Entrauschen 6× (19 s statt 109 s). Die Ergebnisse landen immer auf dem
+Mac. Übersicht mit Zeiten: [Was wo läuft](docs/rechner.md#was-wo-läuft); Einrichtung (Ubuntu, NVIDIA, PixInsight,
+Lizenz, systemd), Aktualisieren, Datenmengen und Schnittstelle: [docs/rechner.md](docs/rechner.md).
 
 Unter der Leiste steht, welche Programme gefunden wurden und welche freien fehlen. Die Recherche zu den Programmen
 und Formaten steht in [docs/nachbearbeitung.md](docs/nachbearbeitung.md).
@@ -369,7 +375,8 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 | `~/.gphoto/6d-proxy.log` | Protokoll des Studios |
 | `~/.gphoto/6d-verbindung`, `~/.gphoto/6d-wlan-ip` | Verbindungsart (`usb` oder `wlan`) und Kamera-IP – Studio und `6d-fernsteuerung` |
 | `~/.config/6d-studio/rechner.json` | Adresse und Schlüssel des Rechners, Vorab-Hochladen (nur für den Besitzer lesbar) |
-| PC: `~/6d-rechner/` | 6D Rechner: `token` (Schlüssel), `sitzungen/<Ablage>_<Sitzung>/` wie `pixinsight/` |
+| `~/.config/6d-studio/modelle/` | MLDenoise-Modell (`*.xmlm`) für das Fertig-Entwickeln mit PixInsight auf dem Mac (`MODEL_DIR`) |
+| Rechner: `<daten>/` (talos: `/boot/6d-rechner/`, Vorgabe `~/6d-rechner/`) | 6D Rechner: `token` (Schlüssel), `sitzungen/<Ablage>_<Sitzung>/` wie `pixinsight/`, `modelle/` (MLDenoise) |
 
 ## Kommandozeile
 
@@ -398,8 +405,9 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
   (Festplatte 172 s, M1 146 s), vom Mac aus mit Hochladen 149 s.
 - **KI-Entrauschen mit MLDenoise** beim Fertig-Entwickeln: auf dem Rechner, wenn dort ein Modell (`MLDenoise_v42.xmlm`
   von pixinsight.com/dist) in `<daten>/modelle/` liegt – 19 s auf der RTX 4090 statt 109 s auf dem M1; auf dem Mac,
-  wenn eines in `~/.config/6d-studio/modelle/` liegt. Schlägt es fehl (z. B. Grafikspeicher voll), wird ohne
-  Entrauschen fertig entwickelt, mit Warnung.
+  wenn eines in `~/.config/6d-studio/modelle/` liegt. Schlägt es fehl, wird ohne Entrauschen fertig entwickelt,
+  mit Warnung. (Ist der Grafikspeicher belegt, rechnet MLDenoise ohne Meldung auf dem Prozessor – nachgemessen
+  am 25.11.: 370 s statt 19 s.)
 - Tests lesen und schreiben die echten Rechner-Einstellungen nicht mehr (der Pfad wurde beim ersten Import
   festgelegt).
 
@@ -484,11 +492,13 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
   stapeln. Der Vordergrund verschmiert, weil auf die Sterne ausgerichtet wird.
 - **Uhrzeit:** Datum und Uhrzeit der Masters kommen aus der Kamera – ihre Uhr sollte stimmen.
 - **Bildverwaltung:** PixInsight (1.9.6) und Siril (1.4.5) sind mit echten Lights geprüft. SPCC und Astrometrie
-  brauchen die Gaia-Datenbank von PixInsight, MLDenoise eine Modelldatei – beides ist noch nicht im Ablauf. Ein
-  laufender Auftrag lässt sich nicht abbrechen. GraXpert ist nur über „Öffnen mit“ angebunden.
-- **Rechner:** auf dem Mac mit dem echten PixInsight geprüft (Dienst lokal); auf Linux noch nicht gelaufen (Xvfb,
-  `/opt/PixInsight`, systemd). Die Grafikkarte nutzt der Ablauf noch nicht (BXT/NXT, MLDenoise wären die Schritte
-  dafür).
+  brauchen die Gaia-Datenbank von PixInsight – noch nicht im Ablauf. MLDenoise entrauscht nur, wenn die
+  Modelldatei bereitliegt. Ein laufender Auftrag lässt sich nicht abbrechen. GraXpert ist nur über „Öffnen mit“
+  angebunden.
+- **Rechner:** auf talos (Ubuntu 24.04, RTX 4090) im Heimnetz eingerichtet und gemessen; Tailscale für unterwegs
+  ist noch nicht eingerichtet. Siril läuft nur auf dem Mac. RC-Astro (BlurXTerminator, NoiseXTerminator) ist nicht
+  eingerichtet (keine Lizenz). Belegt ein anderes Programm den Grafikspeicher (auf talos der Sprachmodell-Server),
+  entrauscht PixInsight ohne Hinweis auf dem Prozessor – 370 s statt 19 s.
 
 ## Projekt
 
@@ -515,7 +525,7 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 | `tests/` | Tests ohne Kamera, auch Studio ↔ Simulator (`.venv/bin/python -m unittest discover -s tests`, ~2 min) |
 | `docs/canon-6d-ptpip.md` | **Alles, was wir über das Protokoll der 6D herausgefunden haben** |
 | `docs/stacking-und-kalibrierung.md` | Serien, Namenskonvention, Ablauf einer Nacht, Live-Stack, Bildanalyse, Bibliothek |
-| `docs/rechner.md` | Rechner: Aufbau, Einrichtung (Ubuntu, NVIDIA, PixInsight, Xvfb, Tailscale, systemd), Datenmengen, Schnittstelle |
+| `docs/rechner.md` | Rechner: was wo läuft (Mac / talos), Einrichtung (Ubuntu, NVIDIA, PixInsight, Lizenz, systemd, Tailscale), Aktualisieren, Grafikkarte (MLDenoise), Datenmengen, Schnittstelle, Messwerte |
 | `docs/nachbearbeitung.md` | Recherche: Programme zur Nachbearbeitung, was PixInsight (WBPP) und Siril erwarten; die Bildverwaltung |
 
 Läuft mit Python 3.9+. Fernsteuerung, Livebild, Bulb und Serien brauchen nur die Standardbibliothek (auch das

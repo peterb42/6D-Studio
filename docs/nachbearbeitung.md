@@ -1,8 +1,9 @@
 # Nachbearbeitung: Bildverwaltung, PixInsight, Siril und andere Programme
 
-Stand 20.11.2026 (Siril 1.4.5 und PixInsight 1.9.6 mit WBPP 3.1.2 geprüft). Teil 1 fasst die Recherche zu den
-üblichen Programmen zusammen, Teil 2 zeigt, was PixInsight (WBPP) und Siril tatsächlich erwarten und wie das Studio
-sie ohne Oberfläche steuert, Teil 3 beschreibt die Bildverwaltung von 6D Studio.
+Stand 25.11.2026 (Siril 1.4.5 und PixInsight 1.9.6 mit WBPP 3.1.2 und MLDenoise v42 geprüft). Teil 1 fasst die
+Recherche zu den üblichen Programmen zusammen, Teil 2 zeigt, was PixInsight (WBPP) und Siril tatsächlich erwarten und
+wie das Studio sie ohne Oberfläche steuert, Teil 3 beschreibt die Bildverwaltung von 6D Studio. Was auf dem Mac und
+was auf dem Rechner (talos) läuft: [rechner.md – Was wo läuft](rechner.md#was-wo-läuft).
 
 ## 1. Der übliche Ablauf und die Programme
 
@@ -17,7 +18,7 @@ Astroaufnahmen werden in zwei Stufen bearbeitet:
 | Programm | Mac | Kosten | Wofür | Anbindung in 6D Studio |
 |---|---|---|---|---|
 | **Siril** | ja | frei | Komplett: Kalibrieren, Stapeln, Hintergrund, Farbe, Strecken; per Skript ohne Oberfläche (`siril-cli`) | Arbeitsordner + Skript, auf Knopfdruck ausführen; „Öffnen mit“ |
-| **PixInsight** | ja | Lizenz | Profi-Werkzeug; Vorverarbeitung mit dem Skript WBPP (Weighted Batch Preprocessing) | WBPP ohne Oberfläche auf Knopfdruck, Fertig entwickeln mit eigenem Skript; WBPP-Ordner mit Light/Dark/Flat/Bias + Listen; „Öffnen mit“ |
+| **PixInsight** | ja | Lizenz | Profi-Werkzeug; Vorverarbeitung mit dem Skript WBPP (Weighted Batch Preprocessing) | WBPP ohne Oberfläche auf Knopfdruck, Fertig entwickeln mit eigenem Skript (mit MLDenoise) – auf dem Mac oder dem Rechner; WBPP-Ordner mit Light/Dark/Flat/Bias + Listen; „Öffnen mit“ |
 | **GraXpert** | ja | frei | Gradienten entfernen und KI-Entrauschen gestapelter Bilder; auch per Kommandozeile | „Öffnen mit“ (FITS, XISF, TIFF, PNG) |
 | **Starry Landscape Stacker** | nur Mac | App Store | Milchstraße mit Vordergrund: Himmel ausrichten, Landschaft scharf lassen | „Öffnen mit“ für die JPEGs (laut älterer Quelle kein RAW) |
 | **Astro Pixel Processor** | ja | Lizenz | Stapeln, Mosaike, Lichtverschmutzung | „Öffnen mit“ |
@@ -82,8 +83,12 @@ Nachgelesen in `doc/docs/CommandLineInterface` und im WBPP-Quelltext (`BPP-Main.
 - **Prozesse für das Fertig-Entwickeln** (Standardwerte aus `toSource()`): GradientCorrection (ohne Proben, für
   lineare Bilder), BackgroundNeutralization, ColorCalibration (Weiß aus den Sternen des ganzen Bilds),
   MultiscaleAdaptiveStretch (neu in 1.9.6, Hintergrund 0,15, ohne Bereich = ganzes Bild), SCNR.
-  MLDenoise (MachineLearning-Modul, ONNX) braucht eine Modelldatei – hier keine installiert, deshalb nicht im
-  Ablauf.
+- **MLDenoise** (MachineLearning-Modul, ONNX Runtime) braucht eine Modelldatei, die nicht zu PixInsight gehört:
+  `MLDenoise_v42.xmlm` (596 MB) aus dem Softwareverteilungssystem von PixInsight. `6d-fertig.js` nimmt sie als
+  drittes Argument (`new MLDenoise; modelPath = …`) und entrauscht das lineare Bild nach ColorCalibration, vor dem
+  Strecken. Rechnet auf dem M1 mit CoreML (109 s für ein ganzes 6D-Bild), unter Linux mit CUDA (RTX 4090: 19 s).
+  Ist der Grafikspeicher belegt, rechnet es ohne Meldung auf dem Prozessor (Ryzen 5 5600X: ~6 min). Schlägt es
+  ganz fehl, meldet das Skript eine Warnung und entwickelt ohne Entrauschen fertig.
 
 ### Siril
 
@@ -150,9 +155,10 @@ mit Grafikkarte: siehe [rechner.md](rechner.md).
      30 Bias: 2 min 30 s), Siril etwa 2,6 s je Light.
 3. **Fertig entwickeln** – für jeden Stapel der Sitzung (PixInsight- oder Siril-Ergebnis, Live-Stack):
    - **PixInsight** (`studio/pixinsight/6d-fertig.js`, ohne Oberfläche): GradientCorrection,
-     BackgroundNeutralization, ColorCalibration, MultiscaleAdaptiveStretch, SCNR; speichert JPEG (Qualität 92)
-     und 16-Bit-TIFF als `<Stapel>_fertig-pi` daneben. Etwa 20 s für ein ganzes 6D-Bild, 9 s für einen
-     Live-Stack (halbe Größe).
+     BackgroundNeutralization, ColorCalibration, MLDenoise (nur mit Modell: auf dem Mac in
+     `~/.config/6d-studio/modelle/`, auf dem Rechner in `<daten>/modelle/`), MultiscaleAdaptiveStretch, SCNR;
+     speichert JPEG (Qualität 92) und 16-Bit-TIFF als `<Stapel>_fertig-pi` daneben. Etwa 20 s für ein ganzes
+     6D-Bild, 9 s für einen Live-Stack (halbe Größe); mit Entrauschen auf dem M1 gut 2 min, auf dem Rechner 41 s.
    - **Siril** entfernt Hintergrund und Gradient (`subsky`), den Grünstich (`rmgreen`), streckt automatisch
      (`autostretch`) und speichert JPEG und 16-Bit-TIFF als `<Stapel>_fertig` daneben. Etwa 4 s.
    - Beide gehen mit FITS und XISF. Beim Stapel steht, womit er fertig entwickelt ist („fertig ✓ PixInsight,
@@ -270,7 +276,8 @@ Ergebnisse und Masters), bei den Lights „CFA images“ an, **Run**.
   - **SPCC** (Farbkalibrierung über Spektren der Gaia-Sterne) und **Astrometrie** brauchen die Gaia-Datenbank
     von PixInsight (Download über das PixInsight-Konto). Ist sie installiert, kann `6d-fertig.js` ImageSolver und
     SPCC statt ColorCalibration nehmen – noch nicht eingebaut, weil hier nicht prüfbar.
-  - **MLDenoise** braucht eine Modelldatei; ohne sie fehlt im PixInsight-Ablauf das Entrauschen.
+  - **RC-Astro** (BlurXTerminator, NoiseXTerminator) bräuchte eine Lizenz – nicht eingebaut; entrauscht wird mit
+    MLDenoise.
   - Ein laufender Auftrag lässt sich nicht abbrechen; hängt PixInsight (z. B. an einer Lizenzmeldung – die zeigt
     es auch im Automatikbetrieb), hilft nur, PixInsight zu beenden.
   - Mehrere Light-Gruppen (z. B. zwei Belichtungszeiten) ergeben mehrere Master-Lights; das Studio nimmt das

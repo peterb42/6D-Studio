@@ -1,14 +1,14 @@
 # Rechner: PixInsight auf einem zweiten Rechner
 
-Stand 20.11.2026. Der Mac bleibt die Station an der Kamera (Aufnahme, Live-Stack, Bildverwaltung). Die schwere
-Arbeit – WBPP und „Fertig entwickeln“ mit PixInsight – kann ein zweiter Rechner übernehmen, z. B. ein Linux-PC mit
-RTX 4090 und 64 GB RAM. Auf ihm läuft **6D Rechner** (`rechner/6d-rechner.py`), ein kleiner Dienst ohne
-Oberfläche; das Studio schickt ihm die Rohbilder und holt die Ergebnisse zurück.
+Stand 25.11.2026. Der Mac bleibt die Station an der Kamera (Aufnahme, Live-Stack, Bildverwaltung). Die schwere
+Arbeit – WBPP und „Fertig entwickeln“ mit PixInsight – kann ein zweiter Rechner übernehmen: hier **talos**, ein
+Linux-PC mit RTX 4090 und 64 GB RAM im Heimnetz. Auf ihm läuft **6D Rechner** (`rechner/6d-rechner.py`), ein
+kleiner Dienst ohne Oberfläche; das Studio schickt ihm die Rohbilder und holt die Ergebnisse zurück.
 
 ```
- Mac: 6D Studio                       Tailscale (WireGuard)        PC: 6D Rechner (Python, systemd)
+ Mac: 6D Studio                     Heimnetz oder Tailscale        PC: 6D Rechner (Python, systemd)
  ┌───────────────────────────┐   ─────────────────────────────▶  ┌──────────────────────────────────────┐
- │ Bilder → Sitzung          │   Rohbilder hoch (nur fehlende)    │ ~/6d-rechner/sitzungen/<Sitzung>/    │
+ │ Bilder → Sitzung          │   Rohbilder hoch (nur fehlende)    │ <daten>/sitzungen/<Sitzung>/         │
  │ „Nachbearbeiten mit       │   Auftrag: WBPP / Fertig entw.     │   Rohbilder/  wbpp/  wbpp_*.xisf     │
  │  Rechner“                 │   Fortschritt jede Sekunde         │ PixInsight -n --automation-mode      │
  │ pixinsight/wbpp_*.xisf  ◀─┼── Ergebnis zurück                  │   (Linux: in xvfb-run)               │
@@ -24,7 +24,9 @@ Oberfläche; das Studio schickt ihm die Rohbilder und holt die Ergebnisse zurüc
   („Schritt 21/31: Lokal normalisieren · 12 Lights“). Das Master-Light kommt nach `pixinsight/wbpp_<n>x<Zeit>s.xisf`,
   die Zwischenbilder löscht der Rechner.
 - **Auf dem Rechner entwickeln:** Der Stapel geht hoch, wenn er dort noch fehlt (ein WBPP-Ergebnis vom Rechner ist
-  schon da), PixInsight entwickelt ihn fertig (`6d-fertig.js`), JPEG und 16-Bit-TIFF kommen neben den Stapel.
+  schon da), PixInsight entwickelt ihn fertig (`6d-fertig.js`) – mit KI-Entrauschen auf der Grafikkarte, wenn ein
+  MLDenoise-Modell bereitliegt ([Die Grafikkarte](#die-grafikkarte)) –, JPEG und 16-Bit-TIFF kommen neben den
+  Stapel.
 - **Vorab hochladen (wahlweise):** Alle 20 s schickt das Studio neue Rohbilder der laufenden Sitzungen zum Rechner –
   nur, was der Export auch nähme. Beim Stapeln fehlen dann nur noch die letzten Bilder. Während der Rechner an der
   Sitzung arbeitet, wartet das Vorab-Hochladen.
@@ -32,7 +34,27 @@ Oberfläche; das Studio schickt ihm die Rohbilder und holt die Ergebnisse zurüc
 
 Die Übertragung läuft über HTTP durch den Dienst, nicht über rsync: eine Verbindung, keine SSH-Schlüssel,
 Fortschritt im Studio, abgebrochene Dateien gehen beim nächsten Abgleich neu hoch (der Rechner schreibt erst in
-`*.part` und benennt dann um). Verschlüsselt ist sie durch Tailscale.
+`*.part` und benennt dann um). Über Tailscale ist sie verschlüsselt, im Heimnetz nicht – dort schützen der
+Schlüssel und die Firewall ([Sicherheit](#sicherheit)).
+
+## Was wo läuft
+
+| Aufgabe | Mac (M1, 16 GB) | Rechner talos (Ryzen 5 5600X, 64 GB, RTX 4090) |
+|---|---|---|
+| Kamera: Livebild, Scharfstellen, Bulb, Serien, Download (WLAN oder Kabel) | nur hier | – |
+| Live-Stack, Bildanalyse, Kalibrier-Bibliothek | nur hier | – |
+| Bildverwaltung: ansehen, Lights prüfen, aussortieren, übernehmen, Export für WBPP | nur hier | – |
+| Vorab hochladen während der Serie | schickt alle 20 s | nimmt an |
+| Stapeln mit WBPP (12 Lights, 20 Darks, 30 Bias) | 146 s | 106 s, vom Mac aus mit Hochladen 149 s |
+| Stapeln mit Siril | 2,6 s je Light | – |
+| Fertig entwickeln mit PixInsight (50-Light-Master) | 20 s, mit MLDenoise gut 2 min | mit MLDenoise 41 s vom Mac aus (Entrauschen 19 s) – nur bei freier Grafikkarte, sonst gut 6 min |
+| Fertig entwickeln mit Siril | 4 s | – |
+| Ergebnisse | immer hier, in `pixinsight/` der Sitzung | behält Rohbilder, Masters und Protokolle je Sitzung, bis man sie löscht |
+
+Faustregel: Zu Hause **Rechner** wählen – vor allem fürs Fertig-Entwickeln mit Entrauschen und für große Sitzungen;
+mit Vorab-Hochladen fällt das Hochladen weg. Unterwegs ohne Verbindung zu talos (Tailscale ist noch nicht
+eingerichtet) **PixInsight** oder **Siril** auf dem Mac. Das Studio führt einen Auftrag zur Zeit aus – auch einer
+auf dem Rechner belegt ihn, bis das Ergebnis zurück ist; Aufnahme und Live-Stack laufen davon unabhängig weiter.
 
 ## Einrichten – Linux-PC
 
@@ -114,6 +136,19 @@ Danach gibt es **Rechner** als drittes Programm neben PixInsight und Siril; die 
 („● pc-4090 · RTX 4090 · 1.2 TB frei · vorab oben: 34/36“). Die Einstellungen liegen in
 `~/.config/6d-studio/rechner.json` (nur für den Besitzer lesbar). Der Schlüssel geht nie an die Oberfläche zurück.
 
+## Aktualisieren
+
+Nach Änderungen am Code – erst auf dem Mac committen und pushen, dann auf dem PC:
+```
+cd ~/6D-Studio && git pull && systemctl --user restart 6d-rechner
+journalctl --user -u 6d-rechner -n 5 -o cat     # PixInsight, Grafikkarte, Datenordner, Modell
+```
+- Den Python-Teil lädt der Dienst beim Start, die PixInsight-Skripte (`studio/pixinsight/`) bei jedem Auftrag.
+  Nicht während eines Auftrags neu starten – er ginge verloren.
+- Ein neues MLDenoise-Modell braucht keinen Neustart: nach `<daten>/modelle/` kopieren (talos:
+  `scp MLDenoise_v43.xmlm peter@192.168.0.144:/boot/6d-rechner/modelle/`); der Dienst nimmt bei jedem Auftrag das
+  neueste. Auf dem Mac liegt es in `~/.config/6d-studio/modelle/`.
+
 ## Datenmengen
 
 Eine CR2 der 6D hat rund 20 MB (Beispielsitzung: 62 Rohbilder = 1,2 GB).
@@ -148,9 +183,10 @@ WBPP rechnet mit dem Prozessor – dort hilft der PC mit RAM und schneller SSD. 
 
   Rauschen im Himmelshintergrund (MAD, grün, linear): 1,4 → 0,4. RTX 4090 und M1 liefern dasselbe Ergebnis.
   „Auf dem Rechner entwickeln“ vom Mac aus, mit Hochladen des Masters: 41 s.
-- **Grafikspeicher:** MLDenoise braucht etwa 2,5 GB. Läuft auf dem PC ein anderes Programm, das die Karte füllt
-  (auf talos z. B. ein Sprachmodell-Server mit 22,5 GB), schlägt das Entrauschen fehl – das Bild wird dann ohne
-  Entrauschen fertig, mit Warnung im Auftrag.
+- **Grafikspeicher:** MLDenoise braucht etwa 2,5 GB. Belegt ein anderes Programm die Karte (auf talos der
+  Sprachmodell-Server `ninfer-serve` mit 22,6 von 24 GB), rechnet PixInsight **stillschweigend auf dem Prozessor**:
+  gemessen 25.11.2026 370 s statt 19 s, Ergebnis gleich, keine Warnung. Für die Grafikkarte den Server während der
+  Bearbeitung anhalten. Scheitert MLDenoise ganz, wird ohne Entrauschen fertig entwickelt, mit Warnung im Auftrag.
 - **RC-Astro** (BlurXTerminator, NoiseXTerminator, StarXTerminator) ginge auf Linux nur in PixInsight mit
   TensorFlow und CUDA – siehe [RC-Astro FAQ](https://www.rc-astro.com/frequently-asked-questions/); nicht eingerichtet
   (keine Lizenz).
@@ -212,5 +248,9 @@ WBPP rechnet mit dem Prozessor – dort hilft der PC mit RAM und schneller SSD. 
 - **Hinweis:** PixInsight setzt `LC_ALL=en_US.utf8`; fehlt die Sprachumgebung, warnt es bei jedem Start (läuft
   trotzdem) – `sudo locale-gen en_US.UTF-8` beseitigt die Warnung.
 - **Offen:**
+  - Tailscale für unterwegs (Schritt 10) – noch nicht eingerichtet; bisher nur im Heimnetz.
+  - Grafikspeicher: Läuft auf talos der Sprachmodell-Server (`ninfer-serve`, als root), entrauscht MLDenoise auf
+    dem Prozessor (370 s statt 19 s) – ohne Hinweis im Studio. Ideen: der Dienst prüft vor dem Entrauschen den
+    freien Grafikspeicher und warnt; oder er darf den Server dafür anhalten (bräuchte eine sudo-Regel).
   - Kein Abbrechen eines laufenden Auftrags (weder im Studio noch auf dem Rechner).
   - Laufende Vorschauen (alle N Bilder ein schnelles Ergebnis vom Rechner neben dem Live-Stack) – geplant.

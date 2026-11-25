@@ -13,8 +13,9 @@
 //    BackgroundNeutralization   Himmelshintergrund grau
 //    ColorCalibration           Weißabgleich an den Sternen des ganzen Bilds (ohne Gaia-Datenbank, ohne Astrometrie)
 //    MLDenoise                  nur mit Modell (.xmlm von Pleiades): KI-Entrauschen des linearen Bilds – auf einer
-//                               NVIDIA-Karte ~19 s für 20 Megapixel, auf einem M1 ~110 s; geht es schief (z. B. zu
-//                               wenig Grafikspeicher), wird ohne Entrauschen weiterentwickelt („6D>> warn …“)
+//                               NVIDIA-Karte ~19 s für 20 Megapixel, auf einem M1 ~110 s; bei belegtem Grafikspeicher
+//                               rechnet es ohne Meldung auf dem Prozessor (Ryzen 5 5600X ~370 s); geht es ganz schief,
+//                               wird ohne Entrauschen weiterentwickelt („6D>> warn …“)
 //    MultiscaleAdaptiveStretch  strecken, Sterne bleiben klein, Farben etwas kräftiger
 //    SCNR                       Grünstich entfernen
 //
