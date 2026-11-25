@@ -394,7 +394,8 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 
 **23.11.2026**
 - **Rechner talos eingerichtet** (Ubuntu 24.04, RTX 4090): PixInsight 1.9.6 (GPU-Ausgabe), Dienst als
-  systemd-Dienst, Daten auf der NVMe-SSD – Schritte in `docs/rechner.md`.
+  systemd-Dienst, Daten auf der NVMe-SSD – Schritte in `docs/rechner.md`. WBPP mit 12 Lights: 106 s auf talos
+  (Festplatte 172 s, M1 146 s), vom Mac aus mit Hochladen 149 s.
 - **KI-Entrauschen mit MLDenoise** beim Fertig-Entwickeln: auf dem Rechner, wenn dort ein Modell (`MLDenoise_v42.xmlm`
   von pixinsight.com/dist) in `<daten>/modelle/` liegt – 19 s auf der RTX 4090 statt 109 s auf dem M1; auf dem Mac,
   wenn eines in `~/.config/6d-studio/modelle/` liegt. Schlägt es fehl (z. B. Grafikspeicher voll), wird ohne

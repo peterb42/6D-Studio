@@ -189,12 +189,16 @@ WBPP rechnet mit dem Prozessor – dort hilft der PC mit RAM und schneller SSD. 
 ## Geprüft und offen
 
 - **Geprüft auf talos (Ubuntu 24.04, Ryzen 5 5600X, RTX 4090) vom Mac aus:**
-  - WBPP über das Studio mit 12 Lights, 20 Darks, 30 Bias: 62 Rohbilder (1,2 GB) in 12 s hoch.
+  - WBPP über das Studio mit 12 Lights, 20 Darks, 30 Bias: 62 Rohbilder (1,2 GB) in 11–12 s hoch, Ergebnis
+    (260 MB) in 2 s zurück.
     | Daten von WBPP | Zeit |
     |---|---|
     | M1 MacBook (SSD) | 146 s |
     | talos, Festplatte | 172 s – Debayern 45 s, Ausrichten 40 s |
+    | **talos, NVMe-SSD** (`/boot/6d-rechner`) | **106 s** – Debayern 14 s, Ausrichten 13 s; vom Mac aus mit Hochladen 149 s, ohne (Rohbilder schon dort) 108 s |
     | talos, im RAM (Obergrenze für die SSD) | 89 s – Debayern 7 s, Ausrichten 6 s |
+  - Der erste Start von PixInsight nach längerer Pause dauert auf talos 35 s statt 2 s: `/opt/PixInsight` liegt auf
+    der Festplatte und kommt erst dann in den Zwischenspeicher (gemessen 25.11.2026: WBPP 136 s statt 106 s).
   - Fertig entwickeln mit MLDenoise auf der RTX 4090 (siehe oben).
   - Dienst als systemd-Dienst des Benutzers mit `xvfb-run`, Firewall, Neustart.
 - **Geprüft auf dem Mac (M1):** Dienst lokal mit dem echten PixInsight 1.9.6, Studio über die Oberfläche (Chrome ohne
@@ -208,6 +212,5 @@ WBPP rechnet mit dem Prozessor – dort hilft der PC mit RAM und schneller SSD. 
 - **Hinweis:** PixInsight setzt `LC_ALL=en_US.utf8`; fehlt die Sprachumgebung, warnt es bei jedem Start (läuft
   trotzdem) – `sudo locale-gen en_US.UTF-8` beseitigt die Warnung.
 - **Offen:**
-  - WBPP mit den Daten auf der NVMe-SSD von talos messen (erwartet: nahe an den 89 s im RAM).
   - Kein Abbrechen eines laufenden Auftrags (weder im Studio noch auf dem Rechner).
   - Laufende Vorschauen (alle N Bilder ein schnelles Ergebnis vom Rechner neben dem Live-Stack) – geplant.
