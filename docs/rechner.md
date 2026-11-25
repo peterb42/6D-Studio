@@ -36,36 +36,58 @@ Fortschritt im Studio, abgebrochene Dateien gehen beim nächsten Abgleich neu ho
 
 ## Einrichten – Linux-PC
 
-Getestet ist der Dienst auf dem Mac (mit dem echten PixInsight 1.9.6, siehe unten). Die Linux-Teile – `xvfb-run`,
-`/opt/PixInsight`, systemd – folgen den Unterlagen von PixInsight und Ubuntu, sind aber auf Linux noch nicht
-gelaufen.
+So eingerichtet am 23.11.2026 auf „talos“ (Ubuntu 24.04.5, Ryzen 5 5600X, 64 GB, RTX 4090) – über SSH vom Mac aus.
 
-1. **Ubuntu Server 24.04 LTS** (ohne Desktop), Benutzer anlegen, SSH an.
-2. **NVIDIA-Treiber:** `sudo ubuntu-drivers install`, neu starten, `nvidia-smi` zeigt die Karte.
-3. **PixInsight für Linux** aus dem Softwareverteilungssystem von PixInsight (eigenes Konto) laden, entpacken und
-   mit dem mitgelieferten Installer nach `/opt/PixInsight` installieren. Die Lizenz gilt für alle eigenen Rechner
-   (EULA §5: „You can install and use the Software on any computer that you own“). Einmal mit Oberfläche starten
-   (Monitor oder NoMachine), um die Lizenz einzutragen und zu sehen, dass alles läuft. Fehlen Bibliotheken, nennt
-   PixInsight sie beim Start – mit `apt` nachinstallieren.
-4. **Xvfb** für PixInsight ohne Bildschirm: `sudo apt install xvfb`. Der Dienst startet PixInsight dann selbst in
-   `xvfb-run`, solange `DISPLAY` nicht gesetzt ist (abschalten mit `--kein-xvfb`).
-5. **Tailscale** auf PC und Mac: auf Linux nach [tailscale.com/download/linux](https://tailscale.com/download/linux),
-   dann `sudo tailscale up`; auf dem Mac die Tailscale-App. `tailscale ip -4` zeigt die Adresse (100.x.y.z). Über
-   Tailscale ist der PC auch unterwegs erreichbar (iPhone-Hotspot), ohne Portfreigabe im Router.
-6. **6D Studio auf den PC:** `git clone <Repository> ~/6D-Studio` – der Dienst braucht nur Python 3.9 oder neuer
-   (bei Ubuntu dabei), keine weiteren Pakete.
-7. **Dienst starten** – zuerst von Hand:
+1. **Ubuntu 24.04** mit SSH; der Mac meldet sich mit Schlüssel an (`ssh-copy-id -i ~/.ssh/id_ed25519.pub
+   peter@<pc>`). Mit Passphrase am Schlüssel: `ssh -o UseKeychain=yes …` nimmt sie aus dem Schlüsselbund.
+2. **NVIDIA-Treiber:** `sudo ubuntu-drivers install`, neu starten, `nvidia-smi` zeigt die Karte (auf talos schon da:
+   595.99, CUDA 13.2).
+3. **Pakete:** `sudo apt install -y xvfb x11vnc apt-file`.
+4. **PixInsight für Linux** (GPU-Ausgabe, `PI-linux-x64-gpu-1.9.6-….tar.xz`, 2 GB) aus dem Softwareverteilungssystem
+   von PixInsight laden, auf den PC kopieren, entpacken und installieren – der Installer kennt nur `/opt/PixInsight`:
    ```
-   python3 ~/6D-Studio/rechner/6d-rechner.py --daten ~/6d-rechner
+   mkdir -p ~/pi-setup && tar -xf PI-linux-x64-gpu-*.tar.xz -C ~/pi-setup && cd ~/pi-setup && sudo ./installer -y
    ```
-   Er meldet Adresse, PixInsight, Grafikkarte und freien Platz und legt beim ersten Start den Schlüssel in
-   `~/6d-rechner/token` an. Dann dauerhaft als Dienst des Benutzers (Datei `rechner/6d-rechner.service`):
+   Die GPU-Ausgabe bringt CUDA 12.6 und cuDNN 9.10 mit; auf talos fehlte keine Bibliothek (Prüfung:
+   `LD_LIBRARY_PATH=/opt/PixInsight/bin/lib ldd /opt/PixInsight/bin/PixInsight | grep "not found"`). Die Lizenz gilt
+   für alle eigenen Rechner (EULA §5).
+5. **Lizenz eintragen** – einmal mit Oberfläche, auch ohne Bildschirm am PC: PixInsight auf einem virtuellen
+   Bildschirm, dazu ein VNC-Server nur auf dem PC selbst, ein SSH-Tunnel und die Bildschirmfreigabe des Macs:
    ```
-   mkdir -p ~/.config/systemd/user && cp ~/6D-Studio/rechner/6d-rechner.service ~/.config/systemd/user/
+   # PC
+   x11vnc -storepasswd <Einmalpasswort> ~/.vnc-pass
+   Xvfb :5 -screen 0 1600x1000x24 -nolisten tcp &
+   DISPLAY=:5 /opt/PixInsight/bin/PixInsight.sh &
+   x11vnc -display :5 -localhost -rfbport 5905 -rfbauth ~/.vnc-pass -forever &
+   # Mac
+   ssh -N -L 5905:localhost:5905 peter@<pc> &   open vnc://localhost:5905
+   ```
+   Lizenz eintragen, PixInsight beenden, VNC, Xvfb und Tunnel beenden. Die Lizenz liegt danach in
+   `~/.PixInsight/PixInsightLicense` – der Dienst muss unter demselben Benutzer laufen.
+6. **Test ohne Bildschirm:** ein Skript mit `-r=` starten (ohne `-r` beendet `--force-exit` PixInsight nicht):
+   `xvfb-run -a /opt/PixInsight/bin/PixInsight.sh -n --automation-mode -r=<test.js> --force-exit` – auf talos nach 7 s
+   wieder zu.
+7. **Daten auf die schnelle SSD:** WBPP schreibt je Light der 6D etwa 650 MB Zwischenbilder. Auf talos liegt `/` auf
+   einer Festplatte (7200 U/min), die NVMe-SSD ist als `/boot` eingehängt – deshalb die Daten in `/boot/6d-rechner`
+   (`sudo mkdir /boot/6d-rechner && sudo chown peter: /boot/6d-rechner`).
+8. **6D Studio auf den PC:** `git clone https://github.com/peterb42/6D-Studio.git ~/6D-Studio` – der Dienst braucht
+   nur Python 3.9 oder neuer, keine weiteren Pakete.
+9. **Dienst** (systemd-Dienst des Benutzers), Adresse im Heimnetz und Datenordner als Zusatzdateien:
+   ```
+   mkdir -p ~/.config/systemd/user/6d-rechner.service.d
+   cp ~/6D-Studio/rechner/6d-rechner.service ~/.config/systemd/user/
+   printf "[Service]\nEnvironment=RECHNER_ADRESSE=192.168.0.144\n" > ~/.config/systemd/user/6d-rechner.service.d/adresse.conf
+   printf "[Service]\nExecStart=\nExecStart=/usr/bin/python3 %%h/6D-Studio/rechner/6d-rechner.py --daten /boot/6d-rechner\n" \
+     > ~/.config/systemd/user/6d-rechner.service.d/daten.conf
    systemctl --user daemon-reload && systemctl --user enable --now 6d-rechner
    sudo loginctl enable-linger $USER
+   sudo ufw allow from 192.168.0.0/24 to any port 8090 proto tcp
    journalctl --user -u 6d-rechner -f
    ```
+   Der Schlüssel steht in `/boot/6d-rechner/token`.
+10. **Unterwegs (später):** Tailscale auf PC und Mac
+    ([tailscale.com/download/linux](https://tailscale.com/download/linux), `sudo tailscale up`, auf dem Mac die App) und
+    `RECHNER_ADRESSE` auf die Tailscale-Adresse (100.x.y.z) – oder `auto`.
 
 **Einstellungen des Dienstes** (Aufruf oder Umgebung):
 
@@ -83,8 +105,8 @@ Ein Mac (z. B. ein Mac mini mit PixInsight) geht genauso – dort ohne Xvfb.
 ## Einrichten – im Studio
 
 **Bilder** → eine Sitzung → in der Zeile „Nachbearbeiten mit“ **+ Rechner**:
-- **Adresse:** `http://100.x.y.z:8090` (Tailscale-Adresse des PCs) oder `http://<Name im Tailnet>:8090`;
-- **Schlüssel:** Inhalt von `~/6d-rechner/token` auf dem PC;
+- **Adresse:** im Heimnetz `http://192.168.0.144:8090` (talos), über Tailscale `http://100.x.y.z:8090`;
+- **Schlüssel:** Inhalt von `<daten>/token` auf dem PC (talos: `/boot/6d-rechner/token`);
 - **Neue Rohbilder schon während der Serie hochladen** – wahlweise.
 
 **Speichern und prüfen** zeigt, was der Rechner hat: PixInsight mit WBPP, Kerne, RAM, Grafikkarte, freien Platz.
@@ -108,16 +130,30 @@ verbunden, braucht er fürs Internet einen zweiten Weg (iPhone per USB, Ethernet
 
 ## Die Grafikkarte
 
-WBPP und „Fertig entwickeln“ rechnen mit dem Prozessor – hier hilft der PC mit mehr Kernen, mehr RAM und schneller
-NVMe-SSD (bei 12 Lights entstehen 7,8 GB Zwischenbilder). Die RTX 4090 nutzen die KI-Werkzeuge:
+WBPP rechnet mit dem Prozessor – dort hilft der PC mit RAM und schneller SSD. Die RTX 4090 nutzt **MLDenoise**
+(PixInsight 1.9.6, KI-Entrauschen mit ONNX Runtime und CUDA):
 
-- **RC-Astro** BlurXTerminator, NoiseXTerminator, StarXTerminator (kostenpflichtig; auf Linux nur in PixInsight):
-  brauchen TensorFlow mit CUDA – siehe [RC-Astro FAQ](https://www.rc-astro.com/frequently-asked-questions/); ein
-  [Skript aus der Gemeinschaft](https://github.com/orangetw0/rcastro-gpuaccel) richtet es ein (vorher lesen).
-- **MLDenoise** (PixInsight 1.9.6, MachineLearning-Modul): ONNX Runtime mit CUDA, braucht eine Modelldatei.
+- **Modell:** Datei `MLDenoise_v42.xmlm` (596 MB) aus dem Softwareverteilungssystem von PixInsight – sie gehört nicht
+  zu PixInsight selbst. Auf dem Rechner in `<daten>/modelle/` legen (talos: `/boot/6d-rechner/modelle/`); der Dienst
+  nimmt das neueste (höchste Version im Namen) und meldet es in `/api/status` (`mldenoise`) und beim Start.
+- **Im Ablauf:** „Auf dem Rechner entwickeln“ entrauscht das lineare Bild nach der Farbkalibrierung, vor dem
+  Strecken. Auf diesem Mac nur, wenn ein Modell in `~/.config/6d-studio/modelle/` liegt (dort ~2 min).
+- **Gemessen** an einem 50-Light-Master der 6D (5450×3547, RGB):
 
-Noch nicht im Ablauf: `6d-fertig.js` nutzt bisher nur Prozesse ohne Grafikkarte. Sind BXT/NXT oder ein
-MLDenoise-Modell auf dem PC eingerichtet, kommen sie als Schritte dazu (nur auf dem Rechner, wo die Karte ist).
+  | Wo | Zeit |
+  |---|---|
+  | RTX 4090 (CUDA) | 18,6 s (erster Lauf mit Laden des Modells 23 s), 2,5 GB Grafikspeicher |
+  | M1, CoreML | 109 s |
+  | Ryzen 5 5600X, nur CPU | 345 s |
+
+  Rauschen im Himmelshintergrund (MAD, grün, linear): 1,4 → 0,4. RTX 4090 und M1 liefern dasselbe Ergebnis.
+  „Auf dem Rechner entwickeln“ vom Mac aus, mit Hochladen des Masters: 41 s.
+- **Grafikspeicher:** MLDenoise braucht etwa 2,5 GB. Läuft auf dem PC ein anderes Programm, das die Karte füllt
+  (auf talos z. B. ein Sprachmodell-Server mit 22,5 GB), schlägt das Entrauschen fehl – das Bild wird dann ohne
+  Entrauschen fertig, mit Warnung im Auftrag.
+- **RC-Astro** (BlurXTerminator, NoiseXTerminator, StarXTerminator) ginge auf Linux nur in PixInsight mit
+  TensorFlow und CUDA – siehe [RC-Astro FAQ](https://www.rc-astro.com/frequently-asked-questions/); nicht eingerichtet
+  (keine Lizenz).
 
 ## Platz und Aufräumen
 
@@ -125,13 +161,14 @@ MLDenoise-Modell auf dem PC eingerichtet, kommen sie als Schritte dazu (nur auf 
   (`wbpp/master/`) und die Protokolle (`wbpp/logs/`). Zwischenbilder löscht der Dienst nach jedem Lauf, auch nach
   einem Absturz; vor jedem Lauf leert er `wbpp/` bis auf die Protokolle (WBPP überschreibt keine Masters, sondern
   legt `_(1)`-Kopien daneben).
-- Ganze Sitzungen löschen: `rm -r ~/6d-rechner/sitzungen/<Ablage>_<Sitzung>` oder
+- Ganze Sitzungen löschen: `rm -r <daten>/sitzungen/<Ablage>_<Sitzung>` (talos: `/boot/6d-rechner/…`) oder
   `DELETE /api/sessions/<Sitzung>`.
 
 ## Sicherheit
 
-- Der Dienst hört von sich aus nur auf der Tailscale-Adresse (sonst nur auf 127.0.0.1) – nicht im Heimnetz, nicht
-  im Internet. Den Port nicht im Router freigeben.
+- Der Dienst hört von sich aus nur auf der Tailscale-Adresse (sonst nur auf 127.0.0.1). Im Heimnetz (talos:
+  `RECHNER_ADRESSE=192.168.0.144`) lässt die Firewall nur das eigene Netz an Port 8090 (`ufw allow from
+  192.168.0.0/24 …`). Den Port nicht im Router freigeben.
 - Jede Anfrage braucht den Schlüssel (`Authorization: Bearer …`, Vergleich in konstanter Zeit). Pfade bleiben im
   Sitzungsordner (`..`, versteckte und leere Teile werden abgelehnt).
 - HTTP selbst ist unverschlüsselt – die Verschlüsselung macht Tailscale (WireGuard).
@@ -151,18 +188,26 @@ MLDenoise-Modell auf dem PC eingerichtet, kommen sie als Schritte dazu (nur auf 
 
 ## Geprüft und offen
 
-- **Geprüft auf dem Mac (M1):** Dienst mit dem echten PixInsight 1.9.6 auf `127.0.0.1:8090`, Studio über die
-  Oberfläche (Chrome ohne Fenster, über das DevTools-Protokoll geklickt): einrichten, 62 Rohbilder (1,2 GB)
-  hochladen, WBPP auf dem Rechner mit Fortschritt, Ergebnis zurück (2 min 36 s); zweiter Lauf: nichts mehr
-  hochgeladen, 10 nicht passende Bias auf dem Rechner gelöscht; fertig entwickeln auf dem Rechner. Tests:
-  `tests/test_rechner.py` (Dienst und Anbindung), `tests/test_simulator.py` 9f (Studio ↔ Dienst).
+- **Geprüft auf talos (Ubuntu 24.04, Ryzen 5 5600X, RTX 4090) vom Mac aus:**
+  - WBPP über das Studio mit 12 Lights, 20 Darks, 30 Bias: 62 Rohbilder (1,2 GB) in 12 s hoch.
+    | Daten von WBPP | Zeit |
+    |---|---|
+    | M1 MacBook (SSD) | 146 s |
+    | talos, Festplatte | 172 s – Debayern 45 s, Ausrichten 40 s |
+    | talos, im RAM (Obergrenze für die SSD) | 89 s – Debayern 7 s, Ausrichten 6 s |
+  - Fertig entwickeln mit MLDenoise auf der RTX 4090 (siehe oben).
+  - Dienst als systemd-Dienst des Benutzers mit `xvfb-run`, Firewall, Neustart.
+- **Geprüft auf dem Mac (M1):** Dienst lokal mit dem echten PixInsight 1.9.6, Studio über die Oberfläche (Chrome ohne
+  Fenster): einrichten, hochladen, WBPP, Ergebnis zurück; zweiter Lauf ohne neues Hochladen, nicht passende Bias auf
+  dem Rechner gelöscht. Tests: `tests/test_rechner.py`, `tests/test_simulator.py` 9f.
 - **Absturz von PixInsight:** Ein Lauf von WBPP stürzte auf dem Mac mitten in der lokalen Normalisierung ab
   (SIGABRT in `LocalNormalizationThread`, Modul ImageCalibration – ein Fehler in PixInsight); in `wbpp/master/`
   lagen da noch die Masters des Laufs davor. Derselbe Lauf mit geleertem `wbpp/` ging durch. Das Studio und der
-  Dienst melden das jetzt mit dem Schritt („PixInsight ist bei „Lokal normalisieren“ abgestürzt (Signal 6)“), löschen
-  die Zwischenbilder und versuchen es bei der lokalen Normalisierung einmal ohne sie – mit Warnung im Auftrag.
+  Dienst melden das jetzt mit dem Schritt, löschen die Zwischenbilder und versuchen es bei der lokalen
+  Normalisierung einmal ohne sie – mit Warnung im Auftrag.
+- **Hinweis:** PixInsight setzt `LC_ALL=en_US.utf8`; fehlt die Sprachumgebung, warnt es bei jedem Start (läuft
+  trotzdem) – `sudo locale-gen en_US.UTF-8` beseitigt die Warnung.
 - **Offen:**
-  - Linux ist nicht ausprobiert (kein PC hier): Xvfb, `/opt/PixInsight/bin/PixInsight.sh`, systemd-Dienst.
-  - Die Grafikkarte nutzt der Ablauf noch nicht (siehe oben).
+  - WBPP mit den Daten auf der NVMe-SSD von talos messen (erwartet: nahe an den 89 s im RAM).
   - Kein Abbrechen eines laufenden Auftrags (weder im Studio noch auf dem Rechner).
   - Laufende Vorschauen (alle N Bilder ein schnelles Ergebnis vom Rechner neben dem Live-Stack) – geplant.

@@ -474,7 +474,28 @@ class TestPixInsight(unittest.TestCase):
             self.assertTrue(os.path.isfile(p), p)
         with open(gallery.PI_FINISH, encoding="utf-8") as f:            # Schritte des Skripts = Schritte im Studio
             import re
-            self.assertEqual(tuple(re.findall(r'sixdStep\( "([^"]+)" \)', f.read())), gallery.PI_FINISH_STEPS)
+            self.assertEqual(re.findall(r'sixdStep\( "([^"]+)" \)', f.read()), gallery.pi_finish_steps("m.xmlm"))
+        self.assertEqual(gallery.pi_finish_steps(), list(gallery.PI_FINISH_STEPS))
+        # MLDenoise-Modelle: das mit der höchsten Version, anderes übergehen; als drittes Argument an 6d-fertig.js
+        models = tempfile.mkdtemp(dir=self.a.out)
+        for n in ("MLDenoise_v41.xmlm", "MLDenoise_v42.xmlm", "MLDenoise_v99.onnx", "anderes.xmlm"):
+            open(os.path.join(models, n), "w").close()
+        self.assertEqual(gallery.find_model([models, "/gibt/es/nicht", None]),
+                         os.path.join(models, "MLDenoise_v42.xmlm"))
+        self.assertIsNone(gallery.find_model([tempfile.mkdtemp(dir=self.a.out)]))
+        cmd, outputs = gallery.pi_finish_command(exe, "/x/s.xisf", "/m/MLDenoise_v42.xmlm")
+        self.assertEqual(cmd[4], "-r=%s,/x/s.xisf,/x/s_fertig-pi,/m/MLDenoise_v42.xmlm" % gallery.PI_FINISH)
+        job = {}                                                         # Warnung des Skripts landet im Auftrag
+
+        def run(command, handle):
+            for ev in ({"event": "step", "text": "Bild laden"}, {"event": "info", "text": "Entrauschen in 19 s"},
+                       {"event": "warn", "text": "Entrauschen übersprungen: out of memory"}):
+                handle(ev)
+        with self.assertRaisesRegex(RuntimeError, "kein fertiges Bild"):
+            gallery.run_pi_finish(cmd, [os.path.join(models, "fehlt.jpg")], job, run=run,
+                                  steps=gallery.pi_finish_steps("m"))
+        self.assertEqual((job["warnings"], job["detail"], job["steps"][3]),
+                         (["Entrauschen übersprungen: out of memory"], "Entrauschen in 19 s", gallery.PI_DENOISE_STEP))
 
     def test_ereignisse_von_wbpp(self):
         ev = [gallery.pi_event(line) for line in WBPP_LINES.strip().splitlines()]

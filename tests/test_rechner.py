@@ -15,6 +15,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "studio"))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 import fake_pixinsight  # noqa: E402
+import gallery  # noqa: E402
 import imaging  # noqa: E402
 import rechner  # noqa: E402
 
@@ -152,6 +153,18 @@ class TestRechner(unittest.TestCase):
         job = self.client.wait(self.client.start("finish", "Kamera_S", "wbpp_3x2s.xisf"), lambda j: None, poll=0.05)
         self.assertEqual(job["results"], ["wbpp_3x2s_fertig-pi.jpg", "wbpp_3x2s_fertig-pi.tif"])
         self.assertEqual(self.client.status()["job"], None)
+        self.assertNotIn(gallery.PI_DENOISE_STEP, job["steps"])
+        # mit MLDenoise-Modell in <daten>/modelle: Entrauschen gehört zum Fertig-Entwickeln
+        self.assertIsNone(self.client.status()["mldenoise"])
+        write(os.path.join(self.worker.models, "MLDenoise_v42.xmlm"), 10)
+        self.assertEqual(self.client.status()["mldenoise"], "MLDenoise_v42.xmlm")
+        job = self.client.wait(self.client.start("finish", "Kamera_S", "wbpp_3x2s.xisf"), lambda j: None, poll=0.05)
+        self.assertEqual((job["error"], job["warnings"], job["index"]), (None, [], 5))
+        self.assertIn(gallery.PI_DENOISE_STEP, job["steps"])
+        write(os.path.join(self.worker.models, "MLDenoise_voll_v43.xmlm"), 10)   # Grafikspeicher voll: Warnung
+        job = self.client.wait(self.client.start("finish", "Kamera_S", "wbpp_3x2s.xisf"), lambda j: None, poll=0.05)
+        self.assertEqual((job["error"], job["warnings"]), (None, ["Entrauschen übersprungen: out of memory"]))
+        self.assertEqual(len(job["results"]), 2)                                # das Bild gibt es trotzdem
         self.client.put("Kamera_S", "kaputt.xisf", write(os.path.join(self.tmp, "k.xisf"), 10))
         job = self.client.wait(self.client.start("finish", "Kamera_S", "kaputt.xisf"), lambda j: None, poll=0.05)
         self.assertEqual(job["error"], "PixInsight: Bild kaputt")

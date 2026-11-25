@@ -15,6 +15,9 @@ Aufruf:
                      „Authorization: Bearer …“
     Linux ohne Bildschirm: PixInsight läuft in xvfb-run (Paket xvfb), solange DISPLAY nicht gesetzt ist.
 
+KI-Entrauschen: liegt in <daten>/modelle ein MLDenoise-Modell (.xmlm, von pixinsight.com/dist), entwickelt der
+Rechner damit fertig – auf der Grafikkarte (CUDA) etwa 19 s für ein 20-Megapixel-Bild.
+
 Ablage: <daten>/sitzungen/<Sitzung>/ wie pixinsight/ einer Sitzung im Studio – Rohbilder/{Light,Dark,Flat,Bias}/,
 wbpp/ (Arbeitsordner von WBPP), Ergebnisse wbpp_*.xisf und *_fertig-pi.* sowie hochgeladene Stapel.
 
@@ -134,6 +137,7 @@ class Worker:
         self.prefix = list(prefix)
         self.jobs, self.order, self.lock = {}, [], threading.Lock()
         self.gpu, self.ram = gpus(), ram_gb()
+        self.models = os.path.join(self.data, "modelle")          # MLDenoise-Modelle (.xmlm)
 
     # ---------- Pfade
     def session_dir(self, session, create=False):
@@ -175,6 +179,7 @@ class Worker:
                 "pixinsight": bool(exe), "wbpp": bool(exe and gallery.wbpp_script(exe)), "cpus": os.cpu_count(),
                 "ram_gb": self.ram, "gpu": self.gpu, "free_gb": round(free / 1e9, 1),
                 "display": " ".join(self.prefix[:2]) if self.prefix else os.environ.get("DISPLAY") or "",
+                "mldenoise": os.path.basename(gallery.find_model([self.models]) or "") or None,
                 "job": dict(current) if current else None}
 
     def current(self):
@@ -222,8 +227,10 @@ class Worker:
                 job["result"] = os.path.relpath(path, base).replace(os.sep, "/")
                 job["results"] = [job["result"]]
             else:
-                command, outputs = gallery.pi_finish_command(self.exe, src)
-                done = gallery.run_pi_finish(self.prefix + command, outputs, job, run=self.run)
+                model = gallery.find_model([self.models])
+                command, outputs = gallery.pi_finish_command(self.exe, src, model)
+                done = gallery.run_pi_finish(self.prefix + command, outputs, job, run=self.run,
+                                             steps=gallery.pi_finish_steps(model))
                 job["results"] = [os.path.relpath(p, base).replace(os.sep, "/") for p in done]
                 job["result"] = job["results"][0]
             job["step"] = "fertig"
@@ -412,6 +419,8 @@ def main(argv=None):
             log("Keine Tailscale-Adresse – nur auf diesem Rechner erreichbar (--adresse angeben)")
     httpd = serve(worker, token, address, args.port)
     st = worker.status()
+    if st["mldenoise"]:
+        log("KI-Entrauschen mit %s" % st["mldenoise"])
     log("6D Rechner „%s“ auf http://%s:%d – PixInsight: %s%s; Grafik: %s; Daten: %s (%.0f GB frei)" % (
         worker.name, address, httpd.server_address[1], args.pixinsight or "nicht gefunden",
         "" if st["wbpp"] else " (ohne WBPP)", ", ".join(st["gpu"]) or "–", worker.data, st["free_gb"]))

@@ -70,6 +70,8 @@ CAM_IP = _ARG if _ARG and _ARG != "usb" else _default_ip()
 CAM_PORT = int(os.environ.get("CAM_PORT", "15740"))         # PTP/IP-Port der Kamera
 GPHOTO_PORT = int(os.environ.get("GPHOTO_PORT", "15740"))   # lokaler Zugang für gphoto2 (127.0.0.1)
 WEB_PORT = int(os.environ.get("STUDIO_PORT", "8066"))
+# MLDenoise-Modelle (.xmlm) für „Fertig entwickeln“ mit PixInsight auf diesem Mac (auf dem Rechner: <daten>/modelle)
+MODEL_DIRS = [os.path.expanduser(os.environ.get("MODEL_DIR", "~/.config/6d-studio/modelle"))]
 RECHNER_LIVE_EVERY = 20.0                                     # s: neue Rohbilder zum Rechner (wenn eingeschaltet)
 OUT = os.path.expanduser(os.environ.get("OUT", "~/Pictures/6D-Tethering"))
 DEFAULT_OUT = os.path.expanduser("~/Pictures/6D-Tethering")   # Kamera-Ablage (Simulator: …/Simulator)
@@ -1352,6 +1354,7 @@ class Studio:
                           for r in self.gallery_roots()],
                 "tools": gallery.tools_info(found), "siril": bool(gallery.siril_cli(found)),
                 "pixinsight": bool(pi), "wbpp": bool(pi and gallery.wbpp_script(pi)), "rechner": self.rechner_info(),
+                "mldenoise": os.path.basename(gallery.find_model(MODEL_DIRS) or "") or None,
                 "frame_types": {k: v["label"] for k, v in astro.FRAME_TYPES.items()}}
 
     def gallery_session(self, root, session):
@@ -1543,7 +1546,8 @@ class Studio:
         if tool == "rechner":
             return self._finish_rechner(out, rel, body.get("root"))
         try:
-            res = (gallery.prepare_pi_finish(out, rel, gallery.pixinsight_cli()) if tool == "pixinsight"
+            res = (gallery.prepare_pi_finish(out, rel, gallery.pixinsight_cli(), gallery.find_model(MODEL_DIRS))
+                   if tool == "pixinsight"
                    else gallery.prepare_finish(out, rel))
         except (ValueError, OSError) as e:
             raise CameraError(str(e)) from None
@@ -1554,7 +1558,7 @@ class Studio:
             job["steps"] = res["steps"]
             t0 = time.time()
             if tool == "pixinsight":
-                done = gallery.run_pi_finish(res["command"], res["outputs"], job)
+                done = gallery.run_pi_finish(res["command"], res["outputs"], job, steps=res["steps"])
             else:
                 self._siril(job, res["folder"], res["script"])
                 os.remove(res["script"])
@@ -1601,7 +1605,8 @@ class Studio:
         if st:
             info.update(ok=True, name=st.get("name"), pixinsight=bool(st.get("pixinsight")),
                         wbpp=bool(st.get("wbpp")), gpu=st.get("gpu") or [], cpus=st.get("cpus"),
-                        ram_gb=st.get("ram_gb"), free_gb=st.get("free_gb"), busy=bool(st.get("job")))
+                        ram_gb=st.get("ram_gb"), free_gb=st.get("free_gb"), busy=bool(st.get("job")),
+                        mldenoise=st.get("mldenoise"))
         else:
             info["error"] = c["error"]
         return info

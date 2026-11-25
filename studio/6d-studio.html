@@ -1335,6 +1335,11 @@ const FINISH_TEXT = {
   pixinsight: 'GradientCorrection, Hintergrund neutralisieren, Farbkalibrierung, MultiscaleAdaptiveStretch, Grünstich weg – als JPEG und 16-Bit-TIFF neben dem Stapel (PixInsight ohne Oberfläche).',
   siril: 'Hintergrund und Gradient entfernen, Grünstich weg, strecken – als JPEG und 16-Bit-TIFF neben dem Stapel.',
   rechner: 'Auf dem Rechner mit PixInsight: GradientCorrection, Hintergrund neutralisieren, Farbkalibrierung, MultiscaleAdaptiveStretch, Grünstich weg – JPEG und 16-Bit-TIFF kommen neben den Stapel zurück. Der Stapel geht nur hoch, wenn er dort noch fehlt.'};
+function finishText(tool) {                             // mit KI-Entrauschen, wenn ein MLDenoise-Modell da ist
+  const model = tool === 'pixinsight' ? GAL.info && GAL.info.mldenoise : tool === 'rechner' ? galRechner().mldenoise : null;
+  if (!model) return FINISH_TEXT[tool] || '';
+  return FINISH_TEXT[tool].replace('Farbkalibrierung,', `Farbkalibrierung, KI-Entrauschen (MLDenoise, ${model.replace(/\.xmlm$/i, '')}${tool === 'pixinsight' ? ', auf dem Mac ~2 min' : ' auf der Grafikkarte'}),`);
+}
 const fmtGB = gb => gb >= 1000 ? `${(gb / 1000).toFixed(1)} TB` : `${Math.round(gb)} GB`;
 function galRechnerChip() {                             // Zustand des Rechners in der Zeile „Nachbearbeiten mit“
   const r = galRechner(), live = S && S.rechner_live;
@@ -1398,7 +1403,7 @@ function renderGalBar() {
   $('#galFinish').disabled = !fin || !galCanFinish(tool) || galJobRunning();
   $('#galFinish').textContent = tool ? `${ACT(tool)} entwickeln` : 'Fertig entwickeln';
   $('#galFinish').title = !tool ? 'Weder PixInsight noch Siril installiert (Siril ist kostenlos: siril.org)'
-    : fin ? FINISH_TEXT[tool] : 'Ein gestapeltes Bild (FITS oder XISF) auswählen';
+    : fin ? finishText(tool) : 'Ein gestapeltes Bild (FITS oder XISF) auswählen';
   $('#galAll').textContent = GAL.sel.size && GAL.sel.size === GAL.items.length ? 'Keine' : 'Alle';
   if (GAL.info) {
     const names = tools.map(t => t.name).join(', ');
@@ -1472,7 +1477,7 @@ function renderGalFlow() {
     + `<button class="btn" data-a="pi" title="Nur die Ordner für WBPP anlegen: Light/Dark/Flat/Bias als Verknüpfungen, Listen, bilder.csv – zum Starten in PixInsight von Hand">Ordner für WBPP</button>`
     + `<button class="btn" data-a="script" title="Arbeitsordner mit Skript, zum Ausführen in Siril selbst">Siril-Skript</button></div></div>`
     + `<div class="fstep${sm.results.some(r => r.finished_jpg) ? ' done' : ''}"><div class="fhead"><span class="fnum">3</span><b>Fertig entwickeln</b></div>`
-    + (res ? `<div class="hint">${tool ? FINISH_TEXT[tool] : 'Weder PixInsight noch Siril installiert.'}</div><div class="fres">${res}</div>`
+    + (res ? `<div class="hint">${tool ? esc(finishText(tool)) : 'Weder PixInsight noch Siril installiert.'}</div><div class="fres">${res}</div>`
            : '<div class="hint">Noch kein gestapeltes Bild – zuerst stapeln (Schritt 2) oder einen Live-Stack speichern.</div>') + '</div>';
 }
 $('#galFlow').addEventListener('click', async e => {

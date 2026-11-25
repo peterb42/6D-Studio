@@ -19,6 +19,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ["OUT"] = tempfile.mkdtemp(prefix="6d-sim-test-")
 os.environ["CAM_MODE"] = "wlan"                                       # Simulator über PTP/IP, nicht die gemerkte Art
 os.environ["GPHOTO_DIR"] = tempfile.mkdtemp(prefix="6d-sim-gphoto-")  # ~/.gphoto bleibt unberührt
+os.environ["MODEL_DIR"] = tempfile.mkdtemp(prefix="6d-sim-modelle-")  # kein MLDenoise-Modell aus ~/.config
 
 
 def load(name, rel):
@@ -484,8 +485,9 @@ class TestStudioMitSimulator(unittest.TestCase):
             st.act_gallery_finish({"rel": job["result"], "tool": "pixinsight"})
             job = wait_job()
             self.assertIsNone(job["error"], job)
-            self.assertEqual((job["label"], job["index"], job["steps"][-1]), ("Mit PixInsight entwickeln", 3,
+            self.assertEqual((job["label"], job["index"], job["steps"][-1]), ("Mit PixInsight entwickeln", 4,
                                                                               "Speichern"))
+            self.assertNotIn(studio.gallery.PI_DENOISE_STEP, job["steps"])     # kein Modell auf diesem „Mac“
             self.assertEqual(sorted(os.path.basename(r) for r in job["results"]),
                              ["wbpp_2x2s_fertig-pi.jpg", "wbpp_2x2s_fertig-pi.tif"])
             r = next(x for x in st.gallery_session("studio", name)["results"] if x["name"] == "wbpp_2x2s")

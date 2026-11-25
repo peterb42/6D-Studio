@@ -17,7 +17,6 @@ import urllib.request
 
 import gallery
 
-CONFIG = os.path.expanduser(os.environ.get("RECHNER_CONFIG", "~/.config/6d-studio/rechner.json"))
 DEFAULTS = {"url": "", "token": "", "live": False}
 LIVE_SETTLE = 5.0                    # Sekunden: so alt muss eine Datei sein, bevor sie vorab hochgeht (fertig geladen)
 LIVE_HOURS = 12                      # vorab hochladen nur für Sitzungen, die in dieser Zeit neue Bilder bekamen
@@ -27,7 +26,14 @@ class RechnerError(Exception):
     pass
 
 
-def load_config(path=CONFIG):
+def config_path():
+    """Erst beim Aufruf bestimmt (nicht beim Import): Tests setzen RECHNER_CONFIG, nachdem andere Testmodule dieses
+    Modul schon geladen haben – sonst läsen und schrieben sie die echten Einstellungen."""
+    return os.path.expanduser(os.environ.get("RECHNER_CONFIG", "~/.config/6d-studio/rechner.json"))
+
+
+def load_config(path=None):
+    path = path or config_path()
     cfg = dict(DEFAULTS)
     try:
         with open(path, encoding="utf-8") as f:
@@ -37,8 +43,9 @@ def load_config(path=CONFIG):
     return cfg
 
 
-def save_config(cfg, path=CONFIG):
+def save_config(cfg, path=None):
     """Nur für den Besitzer lesbar – der Schlüssel steht darin."""
+    path = path or config_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

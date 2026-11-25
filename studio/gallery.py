@@ -821,6 +821,29 @@ FINISHED = re.compile(r"^(.*)_fertig(-pi)?$")    # <Stapel>_fertig (Siril) bzw. 
 PI_FINISH_SUFFIX = "_fertig-pi"
 PI_FINISH_STEPS = ("Bild laden", "Hintergrund und Gradient entfernen", "Farben kalibrieren", "Strecken",
                    "Grünstich entfernen", "Speichern")                  # wie in 6d-fertig.js
+PI_DENOISE_STEP = "Entrauschen (MLDenoise)"                              # nur mit Modell, nach „Farben kalibrieren“
+MODEL_PATTERN = re.compile(r"^MLDenoise.*?(?:_v(\d+))?\.xmlm$", re.I)  # Modelle von Pleiades: MLDenoise_v42.xmlm
+
+
+def pi_finish_steps(model=None):
+    steps = list(PI_FINISH_STEPS)
+    if model:
+        steps.insert(steps.index("Farben kalibrieren") + 1, PI_DENOISE_STEP)
+    return steps
+
+
+def find_model(dirs):
+    """Neuestes MLDenoise-Modell (.xmlm) in den Ordnern – nach der Versionsnummer im Namen, sonst nach Zeit.
+    → Pfad oder None. Die Modelle gibt es bei Pleiades (pixinsight.com/dist), nicht mit PixInsight selbst."""
+    found = []
+    for d in dirs:
+        if d and os.path.isdir(d):
+            for n in os.listdir(d):
+                m = MODEL_PATTERN.match(n)
+                if m and os.path.isfile(os.path.join(d, n)):
+                    p = os.path.join(d, n)
+                    found.append((int(m.group(1) or 0), os.path.getmtime(p), p))
+    return max(found)[2] if found else None
 
 
 def pixinsight_cli(found=None):
@@ -1103,30 +1126,38 @@ def _finish_source(out, rel):
     return path
 
 
-def prepare_pi_finish(out, rel, exe):
-    """Fertig entwickeln mit PixInsight (6d-fertig.js) → <Stapel>_fertig-pi.jpg und .tif daneben."""
+def prepare_pi_finish(out, rel, exe, model=None):
+    """Fertig entwickeln mit PixInsight (6d-fertig.js) → <Stapel>_fertig-pi.jpg und .tif daneben; mit Modell auch
+    KI-Entrauschen (MLDenoise)."""
     path = _finish_source(out, rel)
-    command, outputs = pi_finish_command(exe, path)
-    return {"folder": os.path.dirname(path), "command": command, "steps": list(PI_FINISH_STEPS), "outputs": outputs}
+    command, outputs = pi_finish_command(exe, path, model)
+    return {"folder": os.path.dirname(path), "command": command, "steps": pi_finish_steps(model), "outputs": outputs}
 
 
-def pi_finish_command(exe, path):
+def pi_finish_command(exe, path, model=None):
     """→ (Kommandozeile für 6d-fertig.js, [JPEG, TIFF] daneben)."""
     target = os.path.splitext(path)[0] + PI_FINISH_SUFFIX
-    return pi_command(exe, PI_FINISH, [path, target]), [target + ".jpg", target + ".tif"]
+    args = [path, target] + ([model] if model else [])
+    return pi_command(exe, PI_FINISH, args), [target + ".jpg", target + ".tif"]
 
 
-def run_pi_finish(command, outputs, job, run=run_pixinsight):
-    """6d-fertig.js laufen lassen, Fortschritt in job. → die Ausgabedateien, die dieser Lauf geschrieben hat."""
+def run_pi_finish(command, outputs, job, run=run_pixinsight, steps=None):
+    """6d-fertig.js laufen lassen, Fortschritt in job. → die Ausgabedateien, die dieser Lauf geschrieben hat.
+    Warnungen des Skripts (Entrauschen übersprungen) landen in job["warnings"]."""
     t0 = time.time()
     problem = []
-    job["steps"] = list(PI_FINISH_STEPS)
+    job["steps"] = list(steps or PI_FINISH_STEPS)
+    job.setdefault("warnings", [])
 
     def on(ev):
         if ev["event"] == "step":
             job.update(index=job.get("index", 0) + 1, step=ev["text"], percent=0.0)
         elif ev["event"] == "saved":
             job["detail"] = os.path.basename(ev["text"])
+        elif ev["event"] == "info":
+            job["detail"] = ev["text"]
+        elif ev["event"] == "warn":
+            job["warnings"].append(ev["text"])
         elif ev["event"] == "error":
             problem.append(ev["text"])
     run(command, on)

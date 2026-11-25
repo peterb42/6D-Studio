@@ -392,6 +392,16 @@ Alle Ereignisse (Verbindung, Aufnahmen, Downloads, Live-Stack, Masters, Fehler) 
 
 ## Änderungen
 
+**23.11.2026**
+- **Rechner talos eingerichtet** (Ubuntu 24.04, RTX 4090): PixInsight 1.9.6 (GPU-Ausgabe), Dienst als
+  systemd-Dienst, Daten auf der NVMe-SSD – Schritte in `docs/rechner.md`.
+- **KI-Entrauschen mit MLDenoise** beim Fertig-Entwickeln: auf dem Rechner, wenn dort ein Modell (`MLDenoise_v42.xmlm`
+  von pixinsight.com/dist) in `<daten>/modelle/` liegt – 19 s auf der RTX 4090 statt 109 s auf dem M1; auf dem Mac,
+  wenn eines in `~/.config/6d-studio/modelle/` liegt. Schlägt es fehl (z. B. Grafikspeicher voll), wird ohne
+  Entrauschen fertig entwickelt, mit Warnung.
+- Tests lesen und schreiben die echten Rechner-Einstellungen nicht mehr (der Pfad wurde beim ersten Import
+  festgelegt).
+
 **22.11.2026**
 - **USB-Kabel:** Das Studio geht jetzt auch am Kabel – Livebild, Bulb, Serien, Downloads, Live-Stack und der
   gphoto2-Zugang wie über WLAN. Umschalten in der Kopfzeile (**WLAN | Kabel**) oder mit `6d-fernsteuerung usb` /

@@ -3,7 +3,9 @@ das die Ereigniszeilen der Skripte aus studio/pixinsight/ ausgibt und Dateien wi
 
     WBPP.js         zählt die Lights in dir=/Light, schreibt master/masterLight_…_autocrop.xisf (EXPTIME 2 s) und
                     5000 Bytes Zwischenbild in calibrated/, meldet einen fehlgeschlagenen Schritt (Astrometrie)
-    6d-fertig.js    schreibt <Ziel>.jpg und .tif; enthält die Eingabe „kaputt“, meldet es einen Fehler
+    6d-fertig.js    schreibt <Ziel>.jpg und .tif; enthält die Eingabe „kaputt“, meldet es einen Fehler. Mit Modell
+                    (drittes Argument) meldet es den Schritt „Entrauschen (MLDenoise)“; heißt das Modell
+                    „…_voll…“, schlägt das Entrauschen fehl wie bei vollem Grafikspeicher (Warnung, Bild trotzdem)
 """
 import os
 import sys
@@ -39,7 +41,13 @@ else:
     if 'kaputt' in src:
         say('error Bild kaputt')
         sys.exit(0)
-    for s in ('Bild laden', 'Strecken', 'Speichern'):
+    model = run[3] if len(run) > 3 else ''
+    for s in ('Bild laden', 'Farben kalibrieren'):
+        say('step ' + s)
+    if model:
+        say('step Entrauschen (MLDenoise)')
+        say('warn Entrauschen übersprungen: out of memory' if '_voll' in model else 'info Entrauschen in 0.1 s')
+    for s in ('Strecken', 'Speichern'):
         say('step ' + s)
     for ext in ('.jpg', '.tif'):
         open(target + ext, 'wb').write(b'x')
